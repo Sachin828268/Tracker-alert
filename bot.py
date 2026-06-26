@@ -1,5 +1,7 @@
-import asyncio
+    import asyncio
 import logging
+import os
+from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -10,6 +12,22 @@ from stock_checker import stock_checker_loop
 
 logging.basicConfig(level=logging.INFO)
 
+# --- DUMMY WEB SERVER CODE START ---
+async def handle_web(request):
+    return web.Response(text="Stock Alert Bot is running perfectly!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle_web)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Render automatically $PORT environment variable set karta hai
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logging.info(f"Dummy Web Server started on port {port}")
+# --- DUMMY WEB SERVER CODE END ---
+
 async def main():
     if BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
         logging.error("Please set your BOT_TOKEN in config.py!")
@@ -18,22 +36,22 @@ async def main():
     # Initialize SQLite Database
     init_db()
     
-    # Initialize Bot and Dispatcher
     bot = Bot(
         token=BOT_TOKEN, 
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
     )
     dp = Dispatcher()
-    
-    # Include the handlers
     dp.include_router(router)
     
-    # Start the background Playwright loop for checking stocks
+    # 1. Start Web Server (Taki Render crash na kare)
+    asyncio.create_task(start_web_server())
+    
+    # 2. Start Playwright loop
     asyncio.create_task(stock_checker_loop(bot))
     
     logging.info("Starting Telegram Bot...")
     
-    # Start polling updates
+    # 3. Start Telegram bot polling
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
