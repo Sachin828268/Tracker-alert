@@ -1,7 +1,7 @@
 """
 stock_checker.py
 ~~~~~~~~~~~~~~~~
-Lightweight stock detection using httpx + BeautifulSoup.
+Lightweight stock detection using httpx + BeautifulSoup with proxy support.
 """
 
 import logging
@@ -26,6 +26,8 @@ HEADERS = {
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
 }
+
+PROXY = "http://csryprbi:t37dp9so865h@31.59.20.176:6754"
 
 
 def detect_site(url: str) -> str | None:
@@ -119,6 +121,7 @@ async def check_stock(url: str, site: str) -> bool:
     try:
         async with httpx.AsyncClient(
             headers=HEADERS,
+            proxies=PROXY,
             follow_redirects=True,
             timeout=20.0,
         ) as client:
