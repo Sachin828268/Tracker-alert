@@ -40,6 +40,9 @@ def detect_site(url: str) -> str | None:
 
 
 def _check_amazon(soup: BeautifulSoup, html: str) -> bool:
+    html_lower = html.lower()
+
+    # Method 1: availability div
     avail = soup.find("div", {"id": "availability"})
     if avail:
         text = avail.get_text(" ", strip=True).lower()
@@ -49,22 +52,43 @@ def _check_amazon(soup: BeautifulSoup, html: str) -> bool:
         if "in stock" in text or "available" in text:
             return True
 
-    oos_div = soup.find("div", {"id": "outOfStock"})
-    if oos_div:
+    # Method 2: outOfStock div
+    if soup.find("div", {"id": "outOfStock"}):
         return False
 
-    html_lower = html.lower()
+    # Method 3: buybox unavailable
+    buybox = soup.find("div", {"id": "buybox-see-all-buying-choices"})
+    if buybox:
+        return True
+
+    # Method 4: add to cart button ID
+    if soup.find("input", {"id": "add-to-cart-button"}):
+        return True
+    if soup.find("input", {"id": "buy-now-button"}):
+        return True
+
+    # Method 5: submit.add-to-cart
+    if soup.find("input", {"name": "submit.add-to-cart"}):
+        return True
+
+    # Method 6: raw HTML
     if "currently unavailable" in html_lower:
         return False
-    if "add to cart" in html_lower or "add-to-cart" in html_lower:
+    if "add to cart" in html_lower:
         return True
     if "buy now" in html_lower:
         return True
 
-    price = soup.find("span", {"class": "a-price-whole"})
-    if price:
+    # Method 7: price present
+    if soup.find("span", {"class": "a-price-whole"}):
         return True
 
+    # Method 8: desktop price
+    desktop_price = soup.find("span", {"id": "priceblock_ourprice"})
+    if desktop_price:
+        return True
+
+    logger.info(f"[amazon] no signal found, defaulting OUT OF STOCK")
     return False
 
 
