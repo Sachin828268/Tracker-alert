@@ -86,16 +86,33 @@ def _check_amazon(soup: BeautifulSoup, html: str) -> bool:
 
 def _check_flipkart(soup: BeautifulSoup, html: str) -> bool:
     html_lower = html.lower()
-    if "out of stock" in html_lower or "sold out" in html_lower:
+
+    # Strong negative signals
+    if "sold out" in html_lower:
+        logger.info("[flipkart] 'sold out' found")
         return False
+    if "currently unavailable" in html_lower:
+        logger.info("[flipkart] 'currently unavailable' found")
+        return False
+    if "out of stock" in html_lower and "add to cart" not in html_lower:
+        logger.info("[flipkart] 'out of stock' found, no add-to-cart")
+        return False
+
+    # Strong positive signals
     if "add to cart" in html_lower or "buy now" in html_lower:
         return True
-    price = soup.find("div", {"class": "_30jeq3"})
-    if price:
+
+    # Price element present (various Flipkart class names over time)
+    for price_class in ["_30jeq3", "Nx9bqj", "_25b18c", "_16Jk6d", "CxhGGd"]:
+        if soup.find(["div", "span"], {"class": price_class}):
+            return True
+
+    # Generic price pattern: rupee symbol present alongside delivery/pincode context
+    if "₹" in html and ("pincode" in html_lower or "delivery" in html_lower):
         return True
-    # New Flipkart price class
-    price2 = soup.find("div", {"class": "Nx9bqj"})
-    return price2 is not None
+
+    logger.info("[flipkart] no clear signal found, defaulting OUT OF STOCK")
+    return False
 
 
 def _check_zepto(soup: BeautifulSoup, html: str) -> bool:
