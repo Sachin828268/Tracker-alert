@@ -107,7 +107,7 @@ def _pins_keyboard(pins: list[str]) -> InlineKeyboardMarkup:
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     await message.answer(
-        "👋 <b>Welcome to Stock Alert Bot!</b>\n\n"
+        "👋 <b>Welcome to Ankit's Stock Alert Bot!</b>\n\n"
         "I monitor products on Amazon, Flipkart, Zepto, and BigBasket "
         "and alert you the moment they come back in stock.\n\n"
         "<b>Commands:</b>\n"
