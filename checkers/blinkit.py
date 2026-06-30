@@ -6,8 +6,11 @@ logger = logging.getLogger(__name__)
 
 NEEDS_JS = True
 
-_ADD_PATTERNS = ["add", "add to cart", "add to bag"]
-_OOS_PATTERNS = ["out of stock", "not available", "sold out", "notify me"]
+_ADD_PATTERNS = ["add", "add to cart"]
+_OOS_PATTERNS = [
+    "out of stock", "sold out", "not available",
+    "notify me", "currently unavailable",
+]
 
 
 def check(soup: BeautifulSoup, html: str) -> bool:
@@ -23,28 +26,30 @@ def check(soup: BeautifulSoup, html: str) -> bool:
                     continue
                 avail = item.get("offers", {}).get("availability", "")
                 if "InStock" in avail:
-                    logger.info("[zepto] JSON-LD: InStock")
+                    logger.info("[blinkit] JSON-LD: InStock")
                     return True
                 if "OutOfStock" in avail:
-                    logger.info("[zepto] JSON-LD: OutOfStock")
+                    logger.info("[blinkit] JSON-LD: OutOfStock")
                     return False
         except Exception:
             pass
 
-    # ── Embedded JSON flags ───────────────────────────────────────────────────
+    # ── Embedded JSON inventory flags ─────────────────────────────────────────
     for true_key in ('"in_stock":true', '"inStock":true',
-                     '"available":true', '"is_available":true'):
+                     '"available":true', '"is_available":true',
+                     '"inventory":1', '"serviceable":true'):
         if true_key in html:
             return True
     for false_key in ('"in_stock":false', '"inStock":false',
-                      '"available":false', '"is_available":false'):
+                      '"available":false', '"is_available":false',
+                      '"inventory":0', '"serviceable":false'):
         if false_key in html:
             return False
 
     # ── Explicit OOS text ─────────────────────────────────────────────────────
     for pattern in _OOS_PATTERNS:
         if pattern in html_lower:
-            logger.info(f"[zepto] OOS signal: '{pattern}'")
+            logger.info(f"[blinkit] OOS signal: '{pattern}'")
             return False
 
     # ── Button elements ───────────────────────────────────────────────────────
@@ -54,11 +59,15 @@ def check(soup: BeautifulSoup, html: str) -> bool:
             return True
 
     # ── data-testid / aria-label ──────────────────────────────────────────────
-    for attr in ("data-testid", "aria-label"):
+    for attr in ("data-testid", "aria-label", "id"):
         for el in soup.find_all(attrs={attr: True}):
             val = (el.get(attr) or "").lower()
             if any(p in val for p in _ADD_PATTERNS):
                 return True
 
-    logger.info("[zepto] no clear signal, defaulting OUT OF STOCK")
+    # ── Price element ─────────────────────────────────────────────────────────
+    if "₹" in html and "delivery" in html_lower:
+        return True
+
+    logger.info("[blinkit] no clear signal, defaulting OUT OF STOCK")
     return False

@@ -4,10 +4,13 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-NEEDS_JS = True
+NEEDS_JS = True  # Swiggy Instamart is a JS-heavy SPA
 
-_ADD_PATTERNS = ["add", "add to cart", "add to bag"]
-_OOS_PATTERNS = ["out of stock", "not available", "sold out", "notify me"]
+_ADD_PATTERNS = ["add", "add to cart", "add item"]
+_OOS_PATTERNS = [
+    "out of stock", "sold out", "not available",
+    "notify me", "item not available", "currently unavailable",
+]
 
 
 def check(soup: BeautifulSoup, html: str) -> bool:
@@ -23,42 +26,48 @@ def check(soup: BeautifulSoup, html: str) -> bool:
                     continue
                 avail = item.get("offers", {}).get("availability", "")
                 if "InStock" in avail:
-                    logger.info("[zepto] JSON-LD: InStock")
+                    logger.info("[instamart] JSON-LD: InStock")
                     return True
                 if "OutOfStock" in avail:
-                    logger.info("[zepto] JSON-LD: OutOfStock")
+                    logger.info("[instamart] JSON-LD: OutOfStock")
                     return False
         except Exception:
             pass
 
-    # ── Embedded JSON flags ───────────────────────────────────────────────────
+    # ── Embedded JSON availability flags ──────────────────────────────────────
     for true_key in ('"in_stock":true', '"inStock":true',
-                     '"available":true', '"is_available":true'):
+                     '"available":true', '"is_available":true',
+                     '"isAvailable":true', '"enabled":true'):
         if true_key in html:
             return True
     for false_key in ('"in_stock":false', '"inStock":false',
-                      '"available":false', '"is_available":false'):
+                      '"available":false', '"is_available":false',
+                      '"isAvailable":false'):
         if false_key in html:
             return False
 
     # ── Explicit OOS text ─────────────────────────────────────────────────────
     for pattern in _OOS_PATTERNS:
         if pattern in html_lower:
-            logger.info(f"[zepto] OOS signal: '{pattern}'")
+            logger.info(f"[instamart] OOS signal: '{pattern}'")
             return False
 
-    # ── Button elements ───────────────────────────────────────────────────────
+    # ── Button / interactive elements ─────────────────────────────────────────
     for btn in soup.find_all("button"):
         text = btn.get_text(strip=True).lower()
         if any(p in text for p in _ADD_PATTERNS):
             return True
 
     # ── data-testid / aria-label ──────────────────────────────────────────────
-    for attr in ("data-testid", "aria-label"):
+    for attr in ("data-testid", "aria-label", "id"):
         for el in soup.find_all(attrs={attr: True}):
             val = (el.get(attr) or "").lower()
             if any(p in val for p in _ADD_PATTERNS):
                 return True
 
-    logger.info("[zepto] no clear signal, defaulting OUT OF STOCK")
+    # ── Price element ─────────────────────────────────────────────────────────
+    if "₹" in html and "delivery" in html_lower:
+        return True
+
+    logger.info("[instamart] no clear signal, defaulting OUT OF STOCK")
     return False

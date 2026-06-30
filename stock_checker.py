@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["detect_site", "check_stock", "batch_check"]
 
 # Sites that need JS rendering
-_JS_SITES = {"flipkart", "zepto", "bigbasket"}
+_JS_SITES = {"flipkart", "zepto", "bigbasket", "blinkit", "croma", "instamart", "myntra"}
 
 
 async def check_stock(url: str, site: str) -> bool:
