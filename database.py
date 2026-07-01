@@ -33,6 +33,13 @@ def init_db():
                 UNIQUE(user_id, url)
             )
         """)
+        # Migration: add target_price column for Amazon price-gated alerts.
+        # ALTER TABLE silently fails on older DBs that already have the column.
+        try:
+            conn.execute("ALTER TABLE products ADD COLUMN target_price REAL")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_products_user_id ON products(user_id)
         """)
@@ -56,12 +63,18 @@ def init_db():
 # Products
 # ---------------------------------------------------------------------------
 
-def add_product(user_id: int, name: str, url: str, site: str) -> tuple[bool, str]:
+def add_product(
+    user_id: int,
+    name: str,
+    url: str,
+    site: str,
+    target_price: float | None = None,
+) -> tuple[bool, str]:
     try:
         with get_connection() as conn:
             conn.execute(
-                "INSERT INTO products (user_id, name, url, site) VALUES (?, ?, ?, ?)",
-                (user_id, name, url, site),
+                "INSERT INTO products (user_id, name, url, site, target_price) VALUES (?, ?, ?, ?, ?)",
+                (user_id, name, url, site, target_price),
             )
             conn.commit()
         return True, "Product added successfully."

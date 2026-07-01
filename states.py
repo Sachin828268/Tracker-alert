@@ -4,6 +4,7 @@ from aiogram.fsm.state import State, StatesGroup
 class AddProductStates(StatesGroup):
     waiting_for_name = State()
     waiting_for_link = State()
+    waiting_for_target_price = State()
 
 
 class PinCodeStates(StatesGroup):

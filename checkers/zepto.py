@@ -50,14 +50,12 @@ def check(soup: BeautifulSoup, html: str) -> bool:
         except Exception:
             pass
 
-    # ── Embedded JSON — intentionally limited to unambiguous keys ────────────
-    # NOTE: "is_available" is deliberately excluded — Zepto uses this field on
-    # store and delivery-slot objects that appear on EVERY page, including OOS
-    # product pages. Scanning for it causes false positives when a store or slot
-    # is available even though the specific product is out of stock.
-    # NOTE: "in_stock" is also excluded for the same reason — Zepto product pages
-    # include related/recommended product cards that embed "in_stock":true even
-    # when the tracked product is OOS.  JSON-LD above is the reliable signal.
+    # ── Negative signals (checked before buttons — related-product "Add" buttons
+    # can appear on OOS pages and would otherwise trigger a false positive) ────
+    for pattern in _OOS_PATTERNS:
+        if pattern in html_lower:
+            logger.info(f"[zepto] OOS signal: '{pattern}'")
+            return False
 
     # ── Positive signals: "Add to Cart" / "Add to Bag" button ────────────────
     # Zepto shows "Notify Me" (not Add to Cart) when OOS — so if we find an
@@ -78,12 +76,6 @@ def check(soup: BeautifulSoup, html: str) -> bool:
             if "add-to-cart" in val or "addtocart" in val or any(p in val for p in _ADD_PATTERNS):
                 if el.get("disabled") is None and el.get("aria-disabled", "") != "true":
                     return True
-
-    # ── Negative signals ──────────────────────────────────────────────────────
-    for pattern in _OOS_PATTERNS:
-        if pattern in html_lower:
-            logger.info(f"[zepto] OOS signal: '{pattern}'")
-            return False
 
     logger.info("[zepto] no signal, defaulting OUT OF STOCK")
     return False

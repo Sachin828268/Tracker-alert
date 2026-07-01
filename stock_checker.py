@@ -10,7 +10,7 @@ import asyncio
 import httpx
 from bs4 import BeautifulSoup
 
-from checkers import detect_site, build_scraper_url, HEADERS, CHECKER_MAP
+from checkers import detect_site, build_scraper_url, HEADERS, CHECKER_MAP, PRICE_EXTRACTOR_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +34,16 @@ _PINCODE_COMPLEX_SITES = frozenset({"zepto", "instamart"})
 _QUICK_COMMERCE_SITES = _PINCODE_COOKIE_SITES | _PINCODE_COMPLEX_SITES
 
 
-async def check_stock(url: str, site: str, pincode: str | None = None) -> bool:
+async def check_stock(url: str, site: str, pincode: str | None = None) -> tuple[bool, float | None]:
+    """
+    Returns (in_stock, current_price).
+    current_price is only populated for sites in PRICE_EXTRACTOR_MAP (currently Amazon);
+    it is None for all other sites and when extraction fails.
+    """
     checker = CHECKER_MAP.get(site)
     if checker is None:
         logger.warning(f"No checker for site '{site}'")
-        return False
+        return False, None
 
     set_cookies = None
     if site in _QUICK_COMMERCE_SITES:
@@ -76,15 +81,22 @@ async def check_stock(url: str, site: str, pincode: str | None = None) -> bool:
         html = response.text
         soup = BeautifulSoup(html, "html.parser")
         result = checker(soup, html)
-        logger.info(f"[{site}] {url} → {'IN STOCK' if result else 'OUT OF STOCK'}")
-        return result
+
+        price: float | None = None
+        price_extractor = PRICE_EXTRACTOR_MAP.get(site)
+        if price_extractor is not None:
+            price = price_extractor(soup, html)
+
+        price_str = f" @ ₹{price:,.0f}" if price is not None else ""
+        logger.info(f"[{site}] {url} → {'IN STOCK' if result else 'OUT OF STOCK'}{price_str}")
+        return result, price
 
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error {e.response.status_code} for {url}")
-        return False
+        return False, None
     except Exception as exc:
         logger.error(f"Error checking {url}: {exc}")
-        return False
+        return False, None
 
 
 async def batch_check(
@@ -93,7 +105,7 @@ async def batch_check(
 ) -> list[tuple[dict, bool]]:
     results = []
     for product in products:
-        in_stock = await check_stock(product["url"], product["site"], pincode=pincode)
+        in_stock, _price = await check_stock(product["url"], product["site"], pincode=pincode)
         results.append((product, in_stock))
         await asyncio.sleep(3)
     return results

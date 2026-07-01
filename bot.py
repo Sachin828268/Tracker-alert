@@ -1,13 +1,15 @@
 import asyncio
 import logging
+import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand
 
 from config import BOT_TOKEN, CHECK_INTERVAL
-from database import init_db, get_all_products, update_stock_status
+from database import init_db, get_all_products, update_stock_status, get_user_primary_pincode
 from handlers import router
 from stock_checker import check_stock
 
@@ -18,6 +20,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _log_startup_checks():
+    key = os.environ.get("SCRAPEDO_KEY", "")
+    if key:
+        masked = key[:4] + "*" * (len(key) - 4)
+        logger.info(f"SCRAPEDO_KEY loaded: {masked}")
+    else:
+        logger.warning("SCRAPEDO_KEY is NOT set — Scrape.do calls will fail")
+
+
 # ---------------------------------------------------------------------------
 # Background stock checker
 # ---------------------------------------------------------------------------
@@ -25,8 +36,9 @@ logger = logging.getLogger(__name__)
 async def stock_checker_loop(bot: Bot):
     """
     Runs every CHECK_INTERVAL seconds.
-    Checks all tracked products in parallel (max 3 concurrent ScraperAPI calls).
+    Checks all tracked products in parallel (max 3 concurrent Scrape.do calls).
     Sends an alert when a product transitions from out-of-stock → in-stock.
+    For Amazon items with a target_price, only alerts when price ≤ target.
     """
     logger.info("Stock checker loop started.")
     while True:
@@ -40,10 +52,25 @@ async def stock_checker_loop(bot: Bot):
                 async with sem:
                     try:
                         was_in_stock = bool(product["in_stock"])
-                        now_in_stock = await check_stock(product["url"], product["site"])
+                        pincode = get_user_primary_pincode(product["user_id"])
+                        now_in_stock, current_price = await check_stock(
+                            product["url"], product["site"], pincode=pincode
+                        )
                         update_stock_status(product["id"], now_in_stock)
                         if now_in_stock and not was_in_stock:
-                            await send_stock_alert(bot, product)
+                            target_price = product.get("target_price")
+                            should_alert = (
+                                target_price is None
+                                or current_price is None
+                                or current_price <= target_price
+                            )
+                            if should_alert:
+                                await send_stock_alert(bot, product, price=current_price)
+                            else:
+                                logger.info(
+                                    f"[bot] price gate: #{product['id']} in stock "
+                                    f"@ ₹{current_price:,.0f} > target ₹{target_price:,.0f} — skipping alert"
+                                )
                     except Exception as exc:
                         logger.error(f"Error processing product #{product['id']}: {exc}")
 
@@ -55,12 +82,13 @@ async def stock_checker_loop(bot: Bot):
         await asyncio.sleep(CHECK_INTERVAL)
 
 
-async def send_stock_alert(bot: Bot, product: dict):
+async def send_stock_alert(bot: Bot, product: dict, price: float | None = None):
     """Send an in-stock notification to the product owner."""
+    price_line = f"\n💰 <b>Current price: ₹{price:,.0f}</b>" if price is not None else ""
     text = (
         "🚨 <b>Back in Stock!</b>\n\n"
         f"📦 <b>{product['name']}</b> is now available on "
-        f"<b>{product['site'].capitalize()}</b>!\n\n"
+        f"<b>{product['site'].capitalize()}</b>!{price_line}\n\n"
         f"🛒 <a href=\"{product['url']}\">Buy it now →</a>"
     )
     try:
@@ -81,7 +109,25 @@ async def send_stock_alert(bot: Bot, product: dict):
 # Main
 # ---------------------------------------------------------------------------
 
+async def register_commands(bot: Bot) -> None:
+    commands = [
+        BotCommand(command="start",  description="Welcome message and command overview"),
+        BotCommand(command="add",    description="Track a product (or bulk-add: Name | URL per line)"),
+        BotCommand(command="list",   description="View all your tracked products"),
+        BotCommand(command="check",  description="Check stock now (filter by store or check all)"),
+        BotCommand(command="select", description="Select items to bulk-check or delete"),
+        BotCommand(command="remove", description="Stop tracking a product"),
+        BotCommand(command="search", description="Search tracked products by name"),
+        BotCommand(command="stores", description="List all supported stores"),
+        BotCommand(command="pins",   description="Manage your delivery pin codes"),
+        BotCommand(command="cancel", description="Cancel the current operation"),
+    ]
+    await bot.set_my_commands(commands)
+    logger.info(f"Registered {len(commands)} bot commands with Telegram")
+
+
 async def main():
+    _log_startup_checks()
     init_db()
 
     bot = Bot(
@@ -90,6 +136,8 @@ async def main():
     )
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
+
+    await register_commands(bot)
 
     # Start the background checker as a concurrent task
     checker_task = asyncio.create_task(stock_checker_loop(bot))
