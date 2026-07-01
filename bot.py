@@ -6,6 +6,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand
 
 from config import BOT_TOKEN, CHECK_INTERVAL
 from database import init_db, get_all_products, update_stock_status
@@ -91,6 +92,23 @@ async def send_stock_alert(bot: Bot, product: dict):
 # Main
 # ---------------------------------------------------------------------------
 
+async def register_commands(bot: Bot) -> None:
+    commands = [
+        BotCommand(command="start",  description="Welcome message and command overview"),
+        BotCommand(command="add",    description="Track a product (or bulk-add: Name | URL per line)"),
+        BotCommand(command="list",   description="View all your tracked products"),
+        BotCommand(command="check",  description="Check stock now (filter by store or check all)"),
+        BotCommand(command="select", description="Select items to bulk-check or delete"),
+        BotCommand(command="remove", description="Stop tracking a product"),
+        BotCommand(command="search", description="Search tracked products by name"),
+        BotCommand(command="stores", description="List all supported stores"),
+        BotCommand(command="pins",   description="Manage your delivery pin codes"),
+        BotCommand(command="cancel", description="Cancel the current operation"),
+    ]
+    await bot.set_my_commands(commands)
+    logger.info(f"Registered {len(commands)} bot commands with Telegram")
+
+
 async def main():
     _log_startup_checks()
     init_db()
@@ -101,6 +119,8 @@ async def main():
     )
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
+
+    await register_commands(bot)
 
     # Start the background checker as a concurrent task
     checker_task = asyncio.create_task(stock_checker_loop(bot))
