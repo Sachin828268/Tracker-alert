@@ -36,8 +36,9 @@ def _log_startup_checks():
 async def stock_checker_loop(bot: Bot):
     """
     Runs every CHECK_INTERVAL seconds.
-    Checks all tracked products in parallel (max 3 concurrent ScraperAPI calls).
+    Checks all tracked products in parallel (max 3 concurrent Scrape.do calls).
     Sends an alert when a product transitions from out-of-stock → in-stock.
+    For Amazon items with a target_price, only alerts when price ≤ target.
     """
     logger.info("Stock checker loop started.")
     while True:
@@ -52,10 +53,24 @@ async def stock_checker_loop(bot: Bot):
                     try:
                         was_in_stock = bool(product["in_stock"])
                         pincode = get_user_primary_pincode(product["user_id"])
-                        now_in_stock = await check_stock(product["url"], product["site"], pincode=pincode)
+                        now_in_stock, current_price = await check_stock(
+                            product["url"], product["site"], pincode=pincode
+                        )
                         update_stock_status(product["id"], now_in_stock)
                         if now_in_stock and not was_in_stock:
-                            await send_stock_alert(bot, product)
+                            target_price = product.get("target_price")
+                            should_alert = (
+                                target_price is None
+                                or current_price is None
+                                or current_price <= target_price
+                            )
+                            if should_alert:
+                                await send_stock_alert(bot, product, price=current_price)
+                            else:
+                                logger.info(
+                                    f"[bot] price gate: #{product['id']} in stock "
+                                    f"@ ₹{current_price:,.0f} > target ₹{target_price:,.0f} — skipping alert"
+                                )
                     except Exception as exc:
                         logger.error(f"Error processing product #{product['id']}: {exc}")
 
@@ -67,12 +82,13 @@ async def stock_checker_loop(bot: Bot):
         await asyncio.sleep(CHECK_INTERVAL)
 
 
-async def send_stock_alert(bot: Bot, product: dict):
+async def send_stock_alert(bot: Bot, product: dict, price: float | None = None):
     """Send an in-stock notification to the product owner."""
+    price_line = f"\n💰 <b>Current price: ₹{price:,.0f}</b>" if price is not None else ""
     text = (
         "🚨 <b>Back in Stock!</b>\n\n"
         f"📦 <b>{product['name']}</b> is now available on "
-        f"<b>{product['site'].capitalize()}</b>!\n\n"
+        f"<b>{product['site'].capitalize()}</b>!{price_line}\n\n"
         f"🛒 <a href=\"{product['url']}\">Buy it now →</a>"
     )
     try:

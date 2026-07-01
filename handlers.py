@@ -133,7 +133,7 @@ async def _parallel_check(
 
     async def _one(p: dict) -> tuple[dict, bool]:
         async with sem:
-            result = await check_stock(p["url"], p["site"], pincode=pincode)
+            result, _price = await check_stock(p["url"], p["site"], pincode=pincode)
             update_stock_status(p["id"], result)
             return p, result
 
@@ -257,7 +257,7 @@ async def cmd_start(message: Message):
 
 
 # ---------------------------------------------------------------------------
-# /add  – FSM: name → link(s) → save
+# /add  – FSM: name → link(s) → [target price for Amazon] → save
 # ---------------------------------------------------------------------------
 
 @router.message(Command("add"))
@@ -285,6 +285,7 @@ async def cmd_add(message: Message, state: FSMContext, command: CommandObject):
 
 @router.message(Command("cancel"), AddProductStates.waiting_for_name)
 @router.message(Command("cancel"), AddProductStates.waiting_for_link)
+@router.message(Command("cancel"), AddProductStates.waiting_for_target_price)
 @router.message(Command("cancel"), SearchStates.waiting_for_keyword)
 async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
@@ -369,6 +370,20 @@ async def receive_link(message: Message, state: FSMContext):
         )
         return
 
+    # ── Amazon: ask for optional target price before saving ─────────────────
+    if site == "amazon":
+        await state.update_data(product_url=url, product_site=site)
+        await state.set_state(AddProductStates.waiting_for_target_price)
+        await message.answer(
+            "💰 <b>Set a target price (optional)</b>\n\n"
+            f"Tracking: <b>{name}</b>\n\n"
+            "Send a target price (e.g. <code>1299</code> or <code>1299.99</code>) "
+            "to only get alerted when the price drops to or below that amount.\n\n"
+            "Or send /skip to get alerted at any price.",
+            parse_mode="HTML",
+        )
+        return
+
     ok, msg = add_product(user_id, name, url, site)
     await state.clear()
 
@@ -379,6 +394,49 @@ async def receive_link(message: Message, state: FSMContext):
             f"🛒 <b>Site:</b> {site.capitalize()}\n"
             f"🔗 <b>URL:</b> {url}\n\n"
             "I'll notify you as soon as it's back in stock!",
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer(f"⚠️ {msg}")
+
+
+@router.message(AddProductStates.waiting_for_target_price)
+async def receive_target_price(message: Message, state: FSMContext):
+    raw = message.text.strip()
+    data = await state.get_data()
+    name = data["product_name"]
+    url = data["product_url"]
+    site = data["product_site"]
+    user_id = message.from_user.id
+
+    target_price: float | None = None
+    if raw.lower() not in ("/skip", "skip"):
+        cleaned = raw.lstrip("₹$").replace(",", "").strip()
+        try:
+            target_price = float(cleaned)
+            if target_price <= 0:
+                raise ValueError("price must be positive")
+        except (ValueError, TypeError):
+            await message.answer(
+                "⚠️ That doesn't look like a valid price. "
+                "Send a number like <code>1299</code> or <code>1299.99</code>, "
+                "or /skip to track at any price.",
+                parse_mode="HTML",
+            )
+            return
+
+    ok, msg = add_product(user_id, name, url, site, target_price=target_price)
+    await state.clear()
+
+    if ok:
+        price_line = f"\n💰 <b>Target price:</b> ₹{target_price:,.0f}" if target_price else ""
+        tail = " at or below your target price!" if target_price else "!"
+        await message.answer(
+            f"🎉 <b>Product added!</b>\n\n"
+            f"📌 <b>Name:</b> {name}\n"
+            f"🛒 <b>Site:</b> {site.capitalize()}\n"
+            f"🔗 <b>URL:</b> {url}{price_line}\n\n"
+            f"I'll notify you as soon as it's back in stock{tail}",
             parse_mode="HTML",
         )
     else:
@@ -405,10 +463,12 @@ async def cmd_list(message: Message):
     for p in products:
         stock_emoji = "✅" if p["in_stock"] else "❌"
         checked = p["last_checked"] or "Never"
+        target = p.get("target_price")
+        price_line = f"\n   💰 Target price: ₹{target:,.0f}" if target is not None else ""
         lines.append(
             f"{stock_emoji} <b>{p['name']}</b> [{p['site'].capitalize()}]\n"
             f"   🆔 ID: <code>{p['id']}</code>\n"
-            f"   🕒 Last checked: {checked}\n"
+            f"   🕒 Last checked: {checked}{price_line}\n"
             f"   🔗 <a href=\"{p['url']}\">View product</a>\n"
         )
 
@@ -608,14 +668,15 @@ async def callback_check(call: CallbackQuery):
     await call.answer()
 
     pincode = get_user_primary_pincode(call.from_user.id)
-    in_stock = await check_stock(product["url"], product["site"], pincode=pincode)
+    in_stock, current_price = await check_stock(product["url"], product["site"], pincode=pincode)
     update_stock_status(product_id, in_stock)
 
     status_emoji = "✅" if in_stock else "❌"
     status_text = "IN STOCK" if in_stock else "OUT OF STOCK"
+    price_line = f"\n💰 Current price: ₹{current_price:,.0f}" if current_price is not None else ""
     await call.message.edit_text(
         f"{status_emoji} <b>{product['name']}</b>\n\n"
-        f"Status: <b>{status_text}</b>\n"
+        f"Status: <b>{status_text}</b>{price_line}\n"
         f"Site: {product['site'].capitalize()}\n"
         f"🔗 <a href=\"{product['url']}\">View product</a>",
         parse_mode="HTML",

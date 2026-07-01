@@ -16,4 +16,10 @@ CHECKER_MAP = {
     "apple":           apple.check,
 }
 
-__all__ = ["detect_site", "build_scraper_url", "HEADERS", "CHECKER_MAP"]
+# Sites that expose a price extractor alongside their stock checker.
+# Used by check_stock() to return the current price alongside the bool result.
+PRICE_EXTRACTOR_MAP = {
+    "amazon": amazon.extract_price,
+}
+
+__all__ = ["detect_site", "build_scraper_url", "HEADERS", "CHECKER_MAP", "PRICE_EXTRACTOR_MAP"]

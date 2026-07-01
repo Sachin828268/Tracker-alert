@@ -44,6 +44,14 @@ def check(soup: BeautifulSoup, html: str) -> bool:
         except Exception:
             pass
 
+    # ── Negative signals (checked before buttons/attrs — related-product buttons
+    # without disabled attr can appear on OOS pages and would otherwise trigger
+    # a false positive) ────────────────────────────────────────────────────────
+    for pattern in _OOS_PATTERNS:
+        if pattern in html_lower:
+            logger.info(f"[croma] OOS signal: '{pattern}' → False")
+            return False
+
     # ── Cart button classes — skip disabled elements ───────────────────────────
     # NOTE: On OOS Croma pages the "Add to Cart" button is rendered with the same
     # CSS class (e.g. "add-to-cart") but the element carries `disabled` /
@@ -75,12 +83,6 @@ def check(soup: BeautifulSoup, html: str) -> bool:
             if any(p in val for p in _ADD_PATTERNS):
                 logger.info(f"[croma] active attr {attr}='{val[:40]}' → True")
                 return True
-
-    # ── Negative signals ──────────────────────────────────────────────────────
-    for pattern in _OOS_PATTERNS:
-        if pattern in html_lower:
-            logger.info(f"[croma] OOS signal: '{pattern}' → False")
-            return False
 
     # NOTE: Price class fallback removed — Croma shows product price even when
     # OOS (for reference), causing systematic false positives on OOS pages.
