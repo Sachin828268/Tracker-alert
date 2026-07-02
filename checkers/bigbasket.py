@@ -19,6 +19,14 @@ _LOCATION_GATE_SIGNALS = [
     "select delivery location",
     "add a delivery address",
     "service not available in your area",
+    # Additional location/delivery restriction signals observed on BigBasket
+    "not serviceable",
+    "currently not serviceable",
+    "not available in your area",
+    "delivery not available",
+    "we don't deliver to this pincode",
+    "select your location",
+    "choose your location",
 ]
 
 

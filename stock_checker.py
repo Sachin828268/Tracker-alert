@@ -23,13 +23,20 @@ _JS_SITES = {
     "jiomart", "reliancedigital",
 }
 
-# Quick-commerce sites where injecting a `pincode` cookie is attempted.
-# Scrape.do's setCookies parameter forwards the cookie to the target site.
-_PINCODE_COOKIE_SITES = frozenset({"bigbasket", "blinkit"})
+# Sites where injecting `pincode=<value>` as a cookie causes the target site to
+# serve location-specific stock data. Blinkit reads this cookie directly.
+_PINCODE_COOKIE_SITES = frozenset({"blinkit"})
 
-# Quick-commerce sites that require storeId/session — simple cookie injection
-# won't work; results reflect Scrape.do's IP geolocation instead.
-_PINCODE_COMPLEX_SITES = frozenset({"zepto", "instamart"})
+# Sites that require session/storeId for location-specific stock — simple cookie
+# injection won't work; results reflect Scrape.do's IP geolocation instead.
+#
+# BigBasket: location is stored server-side in a Django session tied to a
+# logged-in account (addr_id). A bare `pincode=<value>` cookie is NOT read by
+# BigBasket for stock determination. Injecting it could bypass the location gate
+# and let the page render, but the stock shown would be for Scrape.do's proxy IP
+# (typically a metro city), not the user's pincode. This is worse than letting
+# the location gate fire (which the checker correctly treats as OOS).
+_PINCODE_COMPLEX_SITES = frozenset({"zepto", "instamart", "bigbasket"})
 
 _QUICK_COMMERCE_SITES = _PINCODE_COOKIE_SITES | _PINCODE_COMPLEX_SITES
 
@@ -54,11 +61,22 @@ async def check_stock(url: str, site: str, pincode: str | None = None) -> tuple[
                 set_cookies = f"pincode={pincode}"
                 logger.info(f"[{site}] pincode={pincode!r} → setCookies={set_cookies!r}")
             else:
-                logger.warning(
-                    f"[{site}] pincode {pincode} saved but {site} requires "
-                    f"a storeId/session lookup — results reflect Scrape.do IP "
-                    f"geolocation, not delivery at pincode {pincode}"
-                )
+                if site == "bigbasket":
+                    logger.warning(
+                        f"[bigbasket] pincode {pincode} saved but BigBasket uses "
+                        f"server-side session location (Django sessionid + addr_id). "
+                        f"A bare pincode= cookie is NOT read for stock data — previously "
+                        f"injecting it bypassed BigBasket's location gate and returned "
+                        f"stock for Scrape.do's proxy IP (not pincode {pincode}), causing "
+                        f"false in-stock alerts. Cookie injection removed. Stock will now "
+                        f"reflect proxy geolocation or trigger the location gate (→ OOS)."
+                    )
+                else:
+                    logger.warning(
+                        f"[{site}] pincode {pincode} saved but {site} requires "
+                        f"a storeId/session lookup — results reflect Scrape.do IP "
+                        f"geolocation, not delivery at pincode {pincode}"
+                    )
         else:
             logger.warning(
                 f"[{site}] no pincode set — stock shown for Scrape.do IP "
@@ -68,6 +86,7 @@ async def check_stock(url: str, site: str, pincode: str | None = None) -> tuple[
 
     try:
         scraper_url = build_scraper_url(url, render_js=site in _JS_SITES, set_cookies=set_cookies)
+        logger.info(f"[{site}] setCookies={set_cookies!r} render_js={site in _JS_SITES}")
         logger.info(f"[{site}] scraper_url (truncated)={scraper_url[:120]!r}")
 
         async with httpx.AsyncClient(

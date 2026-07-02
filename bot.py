@@ -53,6 +53,10 @@ async def stock_checker_loop(bot: Bot):
                     try:
                         was_in_stock = bool(product["in_stock"])
                         pincode = get_user_primary_pincode(product["user_id"])
+                        logger.info(
+                            f"[bot] product #{product['id']} site={product['site']!r} "
+                            f"user_id={product['user_id']} → pincode={pincode!r}"
+                        )
                         now_in_stock, current_price = await check_stock(
                             product["url"], product["site"], pincode=pincode
                         )
