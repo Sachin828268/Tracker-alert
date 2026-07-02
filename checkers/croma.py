@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
@@ -8,13 +9,30 @@ NEEDS_JS = True
 
 _ADD_PATTERNS = ["add to cart", "buy now", "add to bag"]
 
-# Delivery-section strings confirmed on real OOS Croma pages (e.g. vivo T5X).
+# Delivery-section strings shown on OOS Croma pages. Matched against NORMALIZED
+# VISIBLE TEXT (see _normalized_text) — not raw HTML — so a message split across
+# <span>/<div> tags or padded with whitespace still matches, and the match no
+# longer depends on a specific container class name.
 # Checked FIRST — before JSON-LD (which can be stale) and before button text
 # (which appears on both in-stock and OOS pages) — so they act as overrides.
 _DELIVERY_RESTRICTION_PATTERNS = [
     "not available for your pincode",
+    "not available for your location",
     "unfortunately not available for your location",
+    "unfortunately not available",
 ]
+
+
+def _normalized_text(soup: BeautifulSoup) -> str:
+    """
+    Full-page VISIBLE text with runs of whitespace collapsed to single spaces
+    and lowercased. BeautifulSoup's get_text with a space separator joins text
+    from separate tags, so a phrase Croma splits across elements (e.g.
+    <span>Not Available</span><span>for your pincode</span>) becomes the
+    contiguous string 'not available for your pincode' here — which a raw-HTML
+    substring search would miss.
+    """
+    return re.sub(r"\s+", " ", soup.get_text(" ", strip=True)).lower()
 
 _OOS_PATTERNS = [
     "out of stock", "sold out", "currently unavailable",
@@ -81,13 +99,26 @@ def _log_delivery_diagnostics(soup: BeautifulSoup, html: str) -> None:
     instead of guessed at. Log-only: this function never changes the result.
     """
     html_lower = html.lower()
-    logger.info(f"[croma][diag] HTML length={len(html)}")
+    text = _normalized_text(soup)
+    logger.info(f"[croma][diag] HTML length={len(html)}, visible-text length={len(text)}")
     # Confirm we got a real product page, not a bot-challenge / block page.
     logger.info(f"[croma][diag] head: {html[:200]!r}")
 
-    # 1. Exact per-pattern substring presence (what the checker relies on).
+    # 1. Per-pattern presence in BOTH raw HTML and normalized visible text.
+    #    A pattern that is False-in-html but True-in-text confirms the message
+    #    was split across tags — the exact failure the visible-text match fixes.
     for p in _DELIVERY_RESTRICTION_PATTERNS:
-        logger.info(f"[croma][diag] restriction pattern {p!r} in html: {p in html_lower}")
+        logger.info(
+            f"[croma][diag] restriction {p!r}: in_html={p in html_lower} "
+            f"in_visible_text={p in text}"
+        )
+
+    # 1b. Visible-text context around 'not available' so the real phrasing is
+    #     captured even when raw HTML splits it across tags.
+    for kw in ("not available", "unfortunately", "not serviceable"):
+        idx = text.find(kw)
+        if idx != -1:
+            logger.info(f"[croma][diag] visible-text ...{text[max(0, idx - 60):idx + 90]!r}...")
 
     # 2. Broader keyword presence — reveals alternate phrasing / whether the
     #    serviceability text is present in the scraped HTML at all.
@@ -121,27 +152,36 @@ def _log_delivery_diagnostics(soup: BeautifulSoup, html: str) -> None:
 
 def check(soup: BeautifulSoup, html: str) -> bool:
     html_lower = html.lower()
+    text = _normalized_text(soup)
 
     _log_delivery_diagnostics(soup, html)
 
     # ── Delivery restriction — highest priority, overrides all other signals ───
     # On OOS pages Croma's delivery section shows "Not Available for your pincode"
-    # or "Unfortunately not available for your location" (confirmed on real pages).
-    # These are checked before JSON-LD (which may carry stale InStock data) and
-    # before button text (which exists on both in-stock and OOS pages).
+    # or "Unfortunately not available for your location". Matched against the
+    # normalized VISIBLE TEXT (tag/whitespace/class-agnostic); raw HTML is also
+    # checked as a fallback. Checked before JSON-LD (which may carry stale InStock
+    # data) and before button text (which exists on both in-stock and OOS pages).
     for pattern in _DELIVERY_RESTRICTION_PATTERNS:
-        if pattern in html_lower:
-            logger.info(f"[croma] delivery restriction: '{pattern}' → False")
+        if pattern in text or pattern in html_lower:
+            src = "visible-text" if pattern in text else "raw-html"
+            logger.info(f"[croma] delivery restriction ({src}): '{pattern}' → False")
             return False
 
-    # Also inspect the delivery-text-msg element directly for broader coverage
-    # (catches phrasing variants not in the pattern list above).
-    delivery_el = soup.find(class_="delivery-text-msg")
-    if delivery_el:
-        dtxt = delivery_el.get_text(" ", strip=True).lower()
-        logger.info(f"[croma] delivery-text-msg: '{dtxt[:80]}'")
-        if "not available" in dtxt or "unfortunately" in dtxt:
-            logger.info("[croma] delivery-text-msg unavailable text → False")
+    # Scoped fallback: within any element whose class hints at delivery/
+    # serviceability, an unavailability phrase is a reliable OOS signal — 'not
+    # available' is safe here because it is scoped to the delivery element (not
+    # matched globally, where it could appear as e.g. 'EMI not available').
+    for el in soup.find_all(class_=True):
+        cls = " ".join(el.get("class", [])).lower()
+        if not any(tok in cls for tok in ("deliver", "serviceab", "pincode", "availab")):
+            continue
+        etxt = re.sub(r"\s+", " ", el.get_text(" ", strip=True)).lower()
+        if any(sig in etxt for sig in ("not available", "unfortunately", "not serviceable")):
+            logger.info(
+                f"[croma] delivery element class={el.get('class')} "
+                f"text={etxt[:80]!r} → False"
+            )
             return False
 
     # ── JSON-LD pass — OutOfStock trusted immediately; InStock deferred ────────
