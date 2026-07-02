@@ -45,13 +45,20 @@ _CART_CLASSES = ["add-to-cart", "addToCart", "plp-add-to-cart"]
 
 
 def _is_disabled(el) -> bool:
-    """Return True if a BS4 element is visually/semantically disabled."""
+    """Return True if a BS4 element is visually/semantically disabled.
+
+    Croma signals an OOS product's Buy Now / Add to Cart buttons ONLY via class
+    names, not HTML attributes — e.g. class=['btn', 'disable-btn-in-pdp',
+    'disableBuyNow'] with disabled/aria-disabled/style all unset. Matching the
+    substring 'disable' (not the full word 'disabled') catches disableBuyNow,
+    disableCartBtn, and disable-btn-in-pdp, while still matching 'disabled'.
+    """
     if el.get("disabled") is not None:
         return True
     if el.get("aria-disabled", "").lower() == "true":
         return True
     classes = " ".join(el.get("class", [])).lower()
-    return "disabled" in classes or "inactive" in classes
+    return "disable" in classes or "inactive" in classes
 
 
 def _offer_availability(offers) -> str:
@@ -269,42 +276,53 @@ def check(soup: BeautifulSoup, html: str) -> bool:
             logger.info(f"[croma] OOS text: '{pattern}' → False")
             return False
 
-    # ── JSON-LD InStock confirmed (OOS text did not contradict it) ────────────
-    if json_ld_in_stock:
-        logger.info("[croma] JSON-LD InStock confirmed (no OOS text) → True")
-        return True
+    # ── Buy Now / Add to Cart button state — evaluated BEFORE confirming stale
+    #    InStock JSON-LD. Croma disables these buttons on OOS pages via CLASS
+    #    NAMES ONLY (e.g. 'disableBuyNow', 'disableCartBtn', 'disable-btn-in-pdp';
+    #    no disabled attribute), and it still serves InStock JSON-LD for products
+    #    that are universally out of stock. So a disabled primary button is a
+    #    reliable OOS signal that must OVERRIDE the stale InStock, not be skipped
+    #    after it. Buttons are collected via cart classes, button/anchor text,
+    #    and add-to-cart-ish attributes (the vivo T4R Add-to-Cart uses the class
+    #    'pdp-add-to-cart', caught here via its "Add to Cart" text).
+    cart_buttons = []
+    seen_ids = set()
 
-    # ── Cart button classes (exact class membership via BS4 class_= filter) ───
-    # NOTE: Previously used attrs={"class": lambda c: cls in " ".join(c)} which
-    # is BROKEN — BS4 passes individual class strings to the lambda, so
-    # " ".join(str) character-joins rather than word-joins. Use class_=cls
-    # instead, which BS4 correctly resolves to exact class-membership testing.
+    def _add_candidate(el) -> None:
+        if id(el) not in seen_ids:
+            seen_ids.add(id(el))
+            cart_buttons.append(el)
+
     for cls in _CART_CLASSES:
         for el in soup.find_all(class_=cls):
-            if _is_disabled(el):
-                logger.info(f"[croma] class '{cls}' on <{el.name}> is disabled — skipping")
-                continue
-            logger.info(f"[croma] active class '{cls}' on <{el.name}> → True")
-            return True
-
-    # ── Buttons — skip disabled ────────────────────────────────────────────────
-    for btn in soup.find_all("button"):
-        if _is_disabled(btn):
-            continue
-        text = btn.get_text(strip=True).lower()
-        if any(p in text for p in _ADD_PATTERNS):
-            logger.info(f"[croma] active button '{text[:40]}' → True")
-            return True
-
-    # ── Attribute checks ──────────────────────────────────────────────────────
+            _add_candidate(el)
+    for el in soup.find_all(["button", "a"]):
+        if any(p in el.get_text(strip=True).lower() for p in _ADD_PATTERNS):
+            _add_candidate(el)
     for attr in ("data-testid", "aria-label", "id"):
         for el in soup.find_all(attrs={attr: True}):
-            if _is_disabled(el):
-                continue
-            val = (el.get(attr) or "").lower()
-            if any(p in val for p in _ADD_PATTERNS):
-                logger.info(f"[croma] active {attr}='{val[:40]}' → True")
-                return True
+            if any(p in (el.get(attr) or "").lower() for p in _ADD_PATTERNS):
+                _add_candidate(el)
+
+    if cart_buttons:
+        active = [b for b in cart_buttons if not _is_disabled(b)]
+        if active:
+            el = active[0]
+            logger.info(
+                f"[croma] active buy/cart <{el.name}> "
+                f"{el.get_text(strip=True)[:30]!r} → True"
+            )
+            return True
+        logger.info(
+            f"[croma] all {len(cart_buttons)} buy/cart button(s) disabled → False "
+            f"(overrides JSON-LD InStock={json_ld_in_stock})"
+        )
+        return False
+
+    # ── No actionable buy/cart button found — fall back to JSON-LD InStock ─────
+    if json_ld_in_stock:
+        logger.info("[croma] JSON-LD InStock confirmed (no buttons to contradict) → True")
+        return True
 
     logger.info("[croma] no conclusive signal → False")
     return False
