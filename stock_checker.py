@@ -23,13 +23,12 @@ _JS_SITES = {
     "jiomart", "reliancedigital",
 }
 
-# Quick-commerce sites where injecting a `pincode` cookie was previously attempted
-# via Scrape.do's setCookies. Scrapingdog has no equivalent; pincode cookies are
-# not forwarded — results reflect proxy IP geolocation instead.
+# Quick-commerce sites where injecting a `pincode` cookie is attempted.
+# Scrape.do's setCookies parameter forwards the cookie to the target site.
 _PINCODE_COOKIE_SITES = frozenset({"bigbasket", "blinkit"})
 
 # Quick-commerce sites that require storeId/session — simple cookie injection
-# won't work; results reflect Scrapingdog's proxy IP geolocation instead.
+# won't work; results reflect Scrape.do's IP geolocation instead.
 _PINCODE_COMPLEX_SITES = frozenset({"zepto", "instamart"})
 
 _QUICK_COMMERCE_SITES = _PINCODE_COOKIE_SITES | _PINCODE_COMPLEX_SITES
@@ -57,12 +56,12 @@ async def check_stock(url: str, site: str, pincode: str | None = None) -> tuple[
             else:
                 logger.warning(
                     f"[{site}] pincode {pincode} saved but {site} requires "
-                    f"a storeId/session lookup — results reflect Scrapingdog proxy "
+                    f"a storeId/session lookup — results reflect Scrape.do IP "
                     f"geolocation, not delivery at pincode {pincode}"
                 )
         else:
             logger.warning(
-                f"[{site}] no pincode set — stock shown for Scrapingdog proxy "
+                f"[{site}] no pincode set — stock shown for Scrape.do IP "
                 f"geolocation, not the user's delivery area. "
                 f"Use /pins to add a pincode for more accurate results."
             )
