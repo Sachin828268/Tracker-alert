@@ -1,10 +1,20 @@
 import os
 import sqlite3
 import logging
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from config import DB_PATH
 
 logger = logging.getLogger(__name__)
+
+# India Standard Time (UTC+5:30). SQLite's datetime('now') returns UTC, which
+# was being stored and shown to users verbatim — 5:30 behind local time.
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def now_ist_str() -> str:
+    """Current time in IST as a 'YYYY-MM-DD HH:MM:SS' string for storage."""
+    return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -115,10 +125,10 @@ def update_stock_status(product_id: int, in_stock: bool):
         conn.execute(
             """
             UPDATE products
-            SET in_stock = ?, last_checked = datetime('now')
+            SET in_stock = ?, last_checked = ?
             WHERE id = ?
             """,
-            (1 if in_stock else 0, product_id),
+            (1 if in_stock else 0, now_ist_str(), product_id),
         )
         conn.commit()
 

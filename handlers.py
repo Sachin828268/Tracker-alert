@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime
 from urllib.parse import urlparse
 
 from aiogram import Router, F
@@ -30,6 +31,29 @@ from config import SUPPORTED_SITES
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+def _format_last_checked(raw) -> str:
+    """
+    Render a stored 'YYYY-MM-DD HH:MM:SS' timestamp (IST) as a human-friendly
+    12-hour string, e.g. '02 Jul 2026, 8:02 PM'. Returns 'Never' when unset.
+    %-I/%I are avoided for portability; the 12-hour hour is computed manually.
+    """
+    if not raw:
+        return "Never"
+    text = str(raw)
+    dt = None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+        try:
+            dt = datetime.strptime(text, fmt)
+            break
+        except ValueError:
+            continue
+    if dt is None:
+        return text  # unknown format — show as-is rather than crash
+    hour12 = dt.hour % 12 or 12
+    ampm = "AM" if dt.hour < 12 else "PM"
+    return f"{dt.strftime('%d %b %Y')}, {hour12}:{dt.minute:02d} {ampm}"
 
 _SUPPORTED_SITES_TEXT = (
     "amazon.in · flipkart.com · zeptonow.com · bigbasket.com · "
@@ -109,7 +133,7 @@ async def _run_search(target: Message | CallbackQuery, user_id: int, keyword: st
     lines = [f"🔍 <b>Results for \"{keyword}\"</b> ({len(products)} found)\n"]
     for p in products:
         stock_emoji = "✅" if p["in_stock"] else "❌"
-        checked = p["last_checked"] or "Never"
+        checked = _format_last_checked(p["last_checked"])
         lines.append(
             f"{stock_emoji} <b>{p['name']}</b> [{p['site'].capitalize()}]\n"
             f"   🕒 Last checked: {checked}\n"
@@ -462,7 +486,7 @@ async def cmd_list(message: Message):
     lines = ["📋 <b>Your Tracked Products</b>\n"]
     for p in products:
         stock_emoji = "✅" if p["in_stock"] else "❌"
-        checked = p["last_checked"] or "Never"
+        checked = _format_last_checked(p["last_checked"])
         target = p.get("target_price")
         price_line = f"\n   💰 Target price: ₹{target:,.0f}" if target is not None else ""
         lines.append(
