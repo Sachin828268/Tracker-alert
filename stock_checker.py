@@ -23,12 +23,17 @@ _JS_SITES = {
     "jiomart", "reliancedigital",
 }
 
-# Sites where injecting `pincode=<value>` as a cookie causes the target site to
-# serve location-specific stock data. Blinkit reads this cookie directly.
-_PINCODE_COOKIE_SITES = frozenset({"blinkit"})
+# No sites currently support pincode-specific stock via simple cookie injection.
+# Blinkit was here previously (`pincode=<value>`) but real captured Blinkit
+# traffic confirms the backend does not read a cookie literally named "pincode"
+# — see _PINCODE_COMPLEX_SITES below. Kept as an empty frozenset (rather than
+# removed) so the _QUICK_COMMERCE_SITES union and the branching logic below
+# stay structurally valid if a future site is confirmed to support it.
+_PINCODE_COOKIE_SITES = frozenset()
 
-# Sites that require session/storeId for location-specific stock — simple cookie
-# injection won't work; results reflect Scrape.do's IP geolocation instead.
+# Sites that require session/storeId/coordinate resolution for location-specific
+# stock — simple cookie injection won't work; results reflect Scrape.do's IP
+# geolocation instead.
 #
 # BigBasket: location is stored server-side in a Django session tied to a
 # logged-in account (addr_id). A bare `pincode=<value>` cookie is NOT read by
@@ -36,7 +41,25 @@ _PINCODE_COOKIE_SITES = frozenset({"blinkit"})
 # and let the page render, but the stock shown would be for Scrape.do's proxy IP
 # (typically a metro city), not the user's pincode. This is worse than letting
 # the location gate fire (which the checker correctly treats as OOS).
-_PINCODE_COMPLEX_SITES = frozenset({"zepto", "instamart", "bigbasket"})
+#
+# Blinkit: real captured HTTP traffic (live HAR/network capture, not docs) shows
+# Blinkit resolves location via a 3-step flow — GET /location/autoSuggest
+# (pincode text → place_id) → GET /location/info (place_id → lat/lon +
+# is_serviceable) → then the actual product page needs gr_1_lat, gr_1_lon, and a
+# NUMERIC gr_1_locality cookie (not the pincode string) alongside gr_1_deviceId,
+# plus Cloudflare bot-management cookies (__cf_bm, _cfuvid) that a plain HTTP
+# client can't obtain without a JS-capable/browser-fingerprint-matching fetch.
+# A bare `pincode=<value>` cookie (the previous approach here) is not part of
+# this flow and is silently ignored — one documented real-world case shows
+# Blinkit falling back to a DEFAULT locality (e.g. Ahmedabad 380015) whenever
+# location cookies are missing/invalid, rather than erroring. That default-
+# fallback behavior is exactly why two different pincodes (132001 and 400052)
+# previously produced the SAME result: neither was actually being read: both
+# silently collapsed to the same default/proxy-geolocated locality. Cookie
+# injection removed; implementing true pincode accuracy would require making
+# the autoSuggest/info calls first, which is a larger integration than a single
+# cookie and is not implemented here.
+_PINCODE_COMPLEX_SITES = frozenset({"zepto", "instamart", "bigbasket", "blinkit"})
 
 _QUICK_COMMERCE_SITES = _PINCODE_COOKIE_SITES | _PINCODE_COMPLEX_SITES
 
@@ -70,6 +93,20 @@ async def check_stock(url: str, site: str, pincode: str | None = None) -> tuple[
                         f"stock for Scrape.do's proxy IP (not pincode {pincode}), causing "
                         f"false in-stock alerts. Cookie injection removed. Stock will now "
                         f"reflect proxy geolocation or trigger the location gate (→ OOS)."
+                    )
+                elif site == "blinkit":
+                    logger.warning(
+                        f"[blinkit] pincode {pincode} saved but Blinkit resolves location "
+                        f"via GET /location/autoSuggest (pincode→place_id) then "
+                        f"GET /location/info (place_id→lat/lon+is_serviceable), then reads "
+                        f"gr_1_lat/gr_1_lon/a NUMERIC gr_1_locality cookie on the product "
+                        f"page — plus Cloudflare bot-management cookies. A bare pincode= "
+                        f"cookie is NOT part of this flow and was silently ignored; Blinkit "
+                        f"falls back to a DEFAULT locality on missing/invalid location "
+                        f"cookies (documented real-world case: Ahmedabad 380015), which is "
+                        f"why different pincodes previously produced the SAME result. "
+                        f"Cookie injection removed. Stock will now reflect proxy geolocation "
+                        f"or trigger the location gate (→ OOS), not delivery at pincode {pincode}."
                     )
                 else:
                     logger.warning(
