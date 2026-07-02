@@ -21,12 +21,12 @@ logger = logging.getLogger(__name__)
 
 
 def _log_startup_checks():
-    key = os.environ.get("SCRAPEDO_KEY", "")
+    key = os.environ.get("SCRAPINGDOG_KEY", "")
     if key:
         masked = key[:4] + "*" * (len(key) - 4)
-        logger.info(f"SCRAPEDO_KEY loaded: {masked}")
+        logger.info(f"SCRAPINGDOG_KEY loaded: {masked}")
     else:
-        logger.warning("SCRAPEDO_KEY is NOT set — Scrape.do calls will fail")
+        logger.warning("SCRAPINGDOG_KEY is NOT set — Scrapingdog calls will fail")
 
 
 # ---------------------------------------------------------------------------

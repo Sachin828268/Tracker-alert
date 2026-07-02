@@ -8,7 +8,7 @@ from config import SUPPORTED_SITES
 
 logger = logging.getLogger(__name__)
 
-SCRAPEDO_API_URL = "https://api.scrape.do/"
+SCRAPINGDOG_API_URL = "https://api.scrapingdog.com/scrape"
 
 HEADERS = {
     "User-Agent": (
@@ -32,14 +32,19 @@ def detect_site(url: str) -> str | None:
 def build_scraper_url(url: str, render_js: bool = False, set_cookies: str | None = None) -> str:
     # Read at call time so Railway's runtime env var is always used,
     # regardless of when this module was first imported.
-    token = os.environ.get("SCRAPEDO_KEY", "")
+    api_key = os.environ.get("SCRAPINGDOG_KEY", "")
     params = {
-        "token": token,
+        "api_key": api_key,
         "url": url,
-        "geoCode": "in",
+        "dynamic": "true" if render_js else "false",
+        "country": "in",
     }
-    if render_js:
-        params["render"] = "true"
     if set_cookies:
-        params["setCookies"] = set_cookies
-    return f"{SCRAPEDO_API_URL}?{urlencode(params)}"
+        # Scrapingdog has no setCookies equivalent — cookie injection for
+        # pincode-specific stock (BigBasket, Blinkit) is not supported;
+        # results will reflect proxy geolocation instead.
+        logger.warning(
+            f"[scrapingdog] setCookies requested ({set_cookies!r}) but Scrapingdog "
+            f"does not support cookie injection — stock may reflect proxy geolocation"
+        )
+    return f"{SCRAPINGDOG_API_URL}?{urlencode(params)}"
