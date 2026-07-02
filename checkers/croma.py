@@ -69,8 +69,60 @@ def _offer_availability(offers) -> str:
     return ""
 
 
+def _log_delivery_diagnostics(soup: BeautifulSoup, html: str) -> None:
+    """
+    Dump the REAL scraped delivery-section structure to the logs.
+
+    The previous fix assumed "Not Available for your pincode" appears as literal
+    text in the scraped HTML. That assumption passed synthetic tests but fails on
+    the live page, so we log exactly what the real HTML contains — pattern hits,
+    delivery-related elements (whatever their actual class names are), and context
+    around key phrases — so the true structure can be read straight from prod logs
+    instead of guessed at. Log-only: this function never changes the result.
+    """
+    html_lower = html.lower()
+    logger.info(f"[croma][diag] HTML length={len(html)}")
+    # Confirm we got a real product page, not a bot-challenge / block page.
+    logger.info(f"[croma][diag] head: {html[:200]!r}")
+
+    # 1. Exact per-pattern substring presence (what the checker relies on).
+    for p in _DELIVERY_RESTRICTION_PATTERNS:
+        logger.info(f"[croma][diag] restriction pattern {p!r} in html: {p in html_lower}")
+
+    # 2. Broader keyword presence — reveals alternate phrasing / whether the
+    #    serviceability text is present in the scraped HTML at all.
+    for kw in (
+        "not available", "not serviceable", "unfortunately", "pincode",
+        "pin code", "deliver by", "delivered by", "delivery at", "check delivery",
+        "enter pincode", "enter your pincode", "notify me", "sold out",
+    ):
+        if kw in html_lower:
+            logger.info(f"[croma][diag] keyword present: {kw!r}")
+
+    # 3. Every element whose class hints at delivery/serviceability, with its
+    #    ACTUAL class list and text — so we learn the real class names.
+    hits = 0
+    for el in soup.find_all(class_=True):
+        cls = " ".join(el.get("class", [])).lower()
+        if any(tok in cls for tok in ("deliver", "pincode", "serviceab", "availab", "location")):
+            txt = el.get_text(" ", strip=True)[:120]
+            logger.info(f"[croma][diag] el <{el.name}> class={el.get('class')} text={txt!r}")
+            hits += 1
+            if hits >= 25:  # cap noise
+                logger.info("[croma][diag] (delivery-ish element dump capped at 25)")
+                break
+
+    # 4. Context excerpts around the phrases we care about most.
+    for kw in ("not available", "unfortunately", "pincode", "notify me"):
+        idx = html_lower.find(kw)
+        if idx != -1:
+            logger.info(f"[croma][diag] ...{html[max(0, idx - 90):idx + 90]!r}...")
+
+
 def check(soup: BeautifulSoup, html: str) -> bool:
     html_lower = html.lower()
+
+    _log_delivery_diagnostics(soup, html)
 
     # ── Delivery restriction — highest priority, overrides all other signals ───
     # On OOS pages Croma's delivery section shows "Not Available for your pincode"
