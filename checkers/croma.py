@@ -333,7 +333,8 @@ def check(soup: BeautifulSoup, html: str) -> bool:
         return False
 
     # ── No actionable buy/cart button found — fall back to JSON-LD InStock ─────
-    if json_ld_in_stock:
+    # 🔥 FIXED: Only trust JSON-LD InStock if NO buttons were found at all
+    if json_ld_in_stock and not cart_buttons:
         logger.info("[croma] JSON-LD InStock confirmed (no buttons to contradict) → True")
         return True
 
