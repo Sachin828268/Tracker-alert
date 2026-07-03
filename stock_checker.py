@@ -6,6 +6,7 @@ Thin orchestration layer — delegates per-site logic to checkers/.
 
 import logging
 import asyncio
+import time
 
 import httpx
 from bs4 import BeautifulSoup
@@ -17,6 +18,90 @@ logger = logging.getLogger(__name__)
 
 # Re-export detect_site so existing imports from this module still work
 __all__ = ["detect_site", "check_stock", "batch_check"]
+
+# ---------------------------------------------------------------------------
+# Short-lived fetch cache
+# ---------------------------------------------------------------------------
+# Different users tracking the SAME product URL each get their own row in
+# `products` (UNIQUE(user_id, url), not UNIQUE(url)), so the background loop
+# previously fired one independent Scrape.do request per tracker even though
+# the underlying page/request is identical. Today `build_scraper_url()` is
+# fully deterministic per (site, url) — set_cookies is never actually set
+# for any site (see _PINCODE_COOKIE_SITES below, an empty frozenset) — so the
+# exact scraper_url is a safe cache key with no risk of serving one user's
+# pincode-specific result to another. If a future site starts varying
+# set_cookies per-pincode, this remains correct: it just becomes part of the
+# cache key (via the full scraper_url), so pincode-specific requests won't
+# collide with each other, they just won't share a cache entry either.
+#
+# This caches the raw HTML fetch only, not the final in_stock/price result —
+# Apple's per-user pincode refinement (refine_with_pincode) and Amazon's
+# price extraction still run fresh against the (possibly cached) HTML on
+# every call.
+_FETCH_CACHE_TTL_SECONDS = 240  # 4 min — inside the 3-5 min window requested;
+                                 # comfortably under the 300s default
+                                 # CHECK_INTERVAL, so it collapses duplicate
+                                 # requests within one background cycle
+                                 # without materially delaying detection of a
+                                 # real stock change.
+_fetch_cache: dict[str, tuple[float, str]] = {}
+_fetch_locks: dict[str, asyncio.Lock] = {}
+_locks_guard = asyncio.Lock()
+
+
+async def _get_fetch_lock(key: str) -> asyncio.Lock:
+    async with _locks_guard:
+        lock = _fetch_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _fetch_locks[key] = lock
+        return lock
+
+
+def _prune_fetch_cache(now: float) -> None:
+    expired = [k for k, (ts, _) in _fetch_cache.items() if now - ts >= _FETCH_CACHE_TTL_SECONDS]
+    for k in expired:
+        _fetch_cache.pop(k, None)
+        _fetch_locks.pop(k, None)
+
+
+async def _fetch_html(scraper_url: str, site: str) -> str:
+    """
+    Fetch scraper_url, reusing a recent identical fetch when one exists.
+    A per-key lock prevents a thundering herd where several concurrent
+    check_stock() calls for the same not-yet-cached URL (e.g. the background
+    loop's asyncio.gather firing many products at once) each launch their own
+    Scrape.do request before the first one has a chance to populate the cache.
+    """
+    now = time.monotonic()
+    _prune_fetch_cache(now)
+
+    cached = _fetch_cache.get(scraper_url)
+    if cached is not None and now - cached[0] < _FETCH_CACHE_TTL_SECONDS:
+        logger.info(f"[{site}] fetch cache hit (age={now - cached[0]:.0f}s) — Scrape.do request skipped")
+        return cached[1]
+
+    lock = await _get_fetch_lock(scraper_url)
+    async with lock:
+        # Re-check after acquiring the lock: a concurrent call for the same
+        # scraper_url may have already populated the cache while we waited.
+        now = time.monotonic()
+        cached = _fetch_cache.get(scraper_url)
+        if cached is not None and now - cached[0] < _FETCH_CACHE_TTL_SECONDS:
+            logger.info(f"[{site}] fetch cache hit post-lock (age={now - cached[0]:.0f}s) — Scrape.do request skipped")
+            return cached[1]
+
+        async with httpx.AsyncClient(
+            headers=HEADERS,
+            follow_redirects=True,
+            timeout=60.0,
+        ) as client:
+            response = await client.get(scraper_url)
+            response.raise_for_status()
+
+        html = response.text
+        _fetch_cache[scraper_url] = (time.monotonic(), html)
+        return html
 
 # Sites that need JS rendering
 _JS_SITES = {
@@ -149,15 +234,7 @@ async def check_stock(
         logger.info(f"[{site}] setCookies={set_cookies!r} render_js={site in _JS_SITES}")
         logger.info(f"[{site}] scraper_url (truncated)={scraper_url[:120]!r}")
 
-        async with httpx.AsyncClient(
-            headers=HEADERS,
-            follow_redirects=True,
-            timeout=60.0,
-        ) as client:
-            response = await client.get(scraper_url)
-            response.raise_for_status()
-
-        html = response.text
+        html = await _fetch_html(scraper_url, site)
         soup = BeautifulSoup(html, "html.parser")
         result = checker(soup, html)
 
