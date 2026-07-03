@@ -187,7 +187,9 @@ async def _parallel_check(
     async def _one(p: dict) -> tuple[dict, bool]:
         async with sem:
             was_in_stock = bool(p["in_stock"])
-            result, current_price = await check_stock(p["url"], p["site"], pincode=pincode)
+            result, current_price = await check_stock(
+                p["url"], p["site"], pincode=pincode, caller="manual"
+            )
             update_stock_status(p["id"], result)
             if result and not was_in_stock:
                 if should_alert_for_price(p, current_price):
@@ -786,7 +788,9 @@ async def callback_check(call: CallbackQuery):
 
     pincode = get_user_primary_pincode(call.from_user.id)
     was_in_stock = bool(product["in_stock"])
-    in_stock, current_price = await check_stock(product["url"], product["site"], pincode=pincode)
+    in_stock, current_price = await check_stock(
+        product["url"], product["site"], pincode=pincode, caller="manual"
+    )
     update_stock_status(product_id, in_stock)
 
     # Mirror the background loop's transition check (bot.py): a manual check

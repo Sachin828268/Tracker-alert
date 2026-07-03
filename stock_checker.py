@@ -65,12 +65,22 @@ _PINCODE_COMPLEX_SITES = frozenset({"zepto", "instamart", "bigbasket", "blinkit"
 _QUICK_COMMERCE_SITES = _PINCODE_COOKIE_SITES | _PINCODE_COMPLEX_SITES
 
 
-async def check_stock(url: str, site: str, pincode: str | None = None) -> tuple[bool, float | None]:
+async def check_stock(
+    url: str, site: str, pincode: str | None = None, caller: str = "unknown"
+) -> tuple[bool, float | None]:
     """
     Returns (in_stock, current_price).
     current_price is only populated for sites in PRICE_EXTRACTOR_MAP (currently Amazon);
     it is None for all other sites and when extraction fails.
+
+    `caller` is a label ("background" | "manual" | ...) identifying which code
+    path invoked this check — logged up front so the rest of this request's
+    log lines (including any per-site [site][diag] trail) can be tied back to
+    whether it came from the automatic background loop or a manual /check.
+    Purely diagnostic: does not affect behavior.
     """
+    logger.info(f"[{site}] check_stock called: caller={caller!r} pincode={pincode!r} url={url!r}")
+
     checker = CHECKER_MAP.get(site)
     if checker is None:
         logger.warning(f"No checker for site '{site}'")
@@ -179,7 +189,9 @@ async def batch_check(
 ) -> list[tuple[dict, bool]]:
     results = []
     for product in products:
-        in_stock, _price = await check_stock(product["url"], product["site"], pincode=pincode)
+        in_stock, _price = await check_stock(
+            product["url"], product["site"], pincode=pincode, caller="batch_check"
+        )
         results.append((product, in_stock))
         await asyncio.sleep(3)
     return results
