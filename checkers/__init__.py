@@ -1,6 +1,6 @@
 from .common import detect_site, build_scraper_url, HEADERS
 from . import amazon, flipkart, zepto, bigbasket, blinkit, croma, instamart, myntra
-from . import jiomart, reliancedigital, apple
+from . import jiomart, reliancedigital, apple, oneplus
 
 CHECKER_MAP = {
     "amazon":          amazon.check,
@@ -14,6 +14,7 @@ CHECKER_MAP = {
     "jiomart":         jiomart.check,
     "reliancedigital": reliancedigital.check,
     "apple":           apple.check,
+    "oneplus":         oneplus.check,
 }
 
 # Sites that expose a price extractor alongside their stock checker.

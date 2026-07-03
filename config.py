@@ -37,4 +37,5 @@ SUPPORTED_SITES = {
     "jiomart":         ["jiomart.com"],
     "reliancedigital": ["reliancedigital.in"],
     "apple":           ["apple.com"],
+    "oneplus":         ["oneplus.in"],
 }

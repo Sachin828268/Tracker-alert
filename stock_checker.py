@@ -21,7 +21,7 @@ __all__ = ["detect_site", "check_stock", "batch_check"]
 # Sites that need JS rendering
 _JS_SITES = {
     "flipkart", "zepto", "bigbasket", "blinkit", "croma", "instamart", "myntra",
-    "jiomart", "reliancedigital",
+    "jiomart", "reliancedigital", "oneplus",
 }
 
 # No sites currently support pincode-specific stock via simple cookie injection.
