@@ -48,6 +48,11 @@ wherever the real session env vars are set):
     CROMA_PAYLOAD_JSON='{"pinCode": "140301", "productSkus": ["322520"]}' \\
         python3 test_croma_inventory_endpoint.py 322520 140301
 
+    # Try a mobile Chrome/Android User-Agent instead of desktop:
+    CROMA_ACCESS_TOKEN=xxx CROMA_CUSTOMER_HASH=xxx CROMA_APIM_SUBSCRIPTION_KEY=xxx \\
+    CROMA_MOBILE_UA=1 \\
+        python3 test_croma_inventory_endpoint.py 322520 140301
+
 Env vars:
     CROMA_ACCESS_TOKEN            required — the "accessToken" header value
     CROMA_CUSTOMER_HASH           required — the "customerHash" header value
@@ -60,6 +65,9 @@ Env vars:
                                    (requires SCRAPEDO_KEY) instead of calling
                                    Croma directly
     SCRAPEDO_KEY                  required only when CROMA_USE_SCRAPEDO is set
+    CROMA_MOBILE_UA                optional — if set to any non-empty value,
+                                   use a mobile Chrome/Android User-Agent
+                                   instead of desktop Chrome/Windows
 """
 
 import asyncio
@@ -76,11 +84,20 @@ from checkers.common import build_scraper_url
 
 ENDPOINT = "https://api.croma.com/inventory/oms/v2/tms/details-pwa/"
 
+_DESKTOP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+# Akamai Bot Manager sometimes applies different (occasionally looser) rules
+# to mobile traffic than desktop — untested assumption, this just makes it
+# cheap to check. Set CROMA_MOBILE_UA to any non-empty value to try this
+# Android Chrome UA instead of the desktop one, no other code path changes.
+_MOBILE_USER_AGENT = (
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+)
+
 _BASE_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-    ),
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-IN,en;q=0.9",
     "Content-Type": "application/json",
@@ -94,6 +111,7 @@ def _build_headers() -> dict:
     customer_hash = os.environ.get("CROMA_CUSTOMER_HASH", "")
     apim_key = os.environ.get("CROMA_APIM_SUBSCRIPTION_KEY", "")
     client_id = os.environ.get("CROMA_CLIENT_ID", "CROMA-WEB-APP")
+    use_mobile = bool(os.environ.get("CROMA_MOBILE_UA"))
 
     missing = [
         name for name, val in (
@@ -108,6 +126,7 @@ def _build_headers() -> dict:
 
     return {
         **_BASE_HEADERS,
+        "User-Agent": _MOBILE_USER_AGENT if use_mobile else _DESKTOP_USER_AGENT,
         "accessToken": access_token,
         "customerHash": customer_hash,
         "client_id": client_id,
@@ -211,6 +230,7 @@ async def main():
         print(f"  Scrape.do URL (truncated): {request_url[:100]!r}")
     print(f"product_id={product_id!r} pincode={pincode!r}")
     print(f"client_id header: {headers['client_id']!r}")
+    print(f"User-Agent: {'mobile (Android Chrome)' if os.environ.get('CROMA_MOBILE_UA') else 'desktop (Windows Chrome)'}")
 
     custom_payload_raw = os.environ.get("CROMA_PAYLOAD_JSON")
     async with httpx.AsyncClient() as client:
