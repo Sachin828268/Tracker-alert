@@ -110,6 +110,9 @@ def _print_response(label: str, status: int, headers: httpx.Headers, body_text: 
     print(f"  HTTP status: {status}")
     print(f"  Content-Type: {headers.get('content-type')}")
     print(f"  Response byte size: {len(body_text.encode('utf-8'))}")
+    server = headers.get("server", "")
+    print(f"  Server header: {server!r}" + ("  <-- Akamai edge block signature" if "akamai" in server.lower() else ""))
+    print(f"  All response headers: {dict(headers)}")
     try:
         parsed = json.loads(body_text)
         print("  Response JSON:")
