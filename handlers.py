@@ -366,7 +366,7 @@ async def cmd_start(message: Message):
 # /freetrial – WhatsApp-share-gated one-time trial bonus
 # ---------------------------------------------------------------------------
 
-def _freetrial_round_text(rounds_done: int) -> str:
+def _freetrial_round_text(rounds_done: int, *, waiting: bool) -> str:
     round_num = min(rounds_done + 1, SHARE_TRIAL_ROUNDS_REQUIRED)
     if rounds_done == 0:
         progress_line = (
@@ -375,11 +375,19 @@ def _freetrial_round_text(rounds_done: int) -> str:
         )
     else:
         progress_line = f"✅ {rounds_done}/{SHARE_TRIAL_ROUNDS_REQUIRED} shares done — keep going!\n\n"
+
+    if waiting:
+        status_line = (
+            f"⏳ Please wait {SHARE_TRIAL_TAP_DELAY_SECONDS} seconds while you share...\n\n"
+            "Tap <b>Share on WhatsApp</b> below — open the app, pick a contact "
+            "or group, and send it."
+        )
+    else:
+        status_line = "✅ Shared? Tap <b>Done</b> below to continue."
+
     return (
         f"🎁 <b>Get a free trial!</b> (Round {round_num} of {SHARE_TRIAL_ROUNDS_REQUIRED})\n\n"
-        + progress_line +
-        "⏳ Tap <b>Share on WhatsApp</b> below — the <b>Done</b> button "
-        "appears a few seconds after."
+        + progress_line + status_line
     )
 
 
@@ -417,10 +425,11 @@ def _freetrial_full_keyboard(bot_link: str) -> InlineKeyboardMarkup:
 
 async def _reveal_done_button(bot, message: Message, user_id: int, expected_rounds_done: int) -> None:
     """
-    Waits SHARE_TRIAL_TAP_DELAY_SECONDS, then adds the "Done" button to this
-    round's message — unless the user has since moved on (retried, or
-    somehow already claimed) before the delay elapsed, in which case that
-    newer state's own reveal task owns showing Done and this one no-ops.
+    Waits SHARE_TRIAL_TAP_DELAY_SECONDS, then switches this round's message
+    from the "please wait" text to the "tap Done" text and reveals the Done
+    button — unless the user has since moved on (retried, or somehow already
+    claimed) before the delay elapsed, in which case that newer state's own
+    reveal task owns showing Done and this one no-ops.
     """
     await asyncio.sleep(SHARE_TRIAL_TAP_DELAY_SECONDS)
     if has_used_share_trial(user_id):
@@ -429,17 +438,22 @@ async def _reveal_done_button(bot, message: Message, user_id: int, expected_roun
         return
     bot_link = await _freetrial_bot_link(bot)
     try:
-        await message.edit_reply_markup(reply_markup=_freetrial_full_keyboard(bot_link))
+        await message.edit_text(
+            _freetrial_round_text(expected_rounds_done, waiting=False),
+            parse_mode="HTML",
+            reply_markup=_freetrial_full_keyboard(bot_link),
+        )
     except Exception:
         pass  # message may have been edited/deleted already
 
 
 async def _show_round(target: Message, bot, user_id: int, rounds_done: int, *, is_new_message: bool) -> None:
-    """Show a round's share screen (Share-only at first) and schedule the
-    delayed reveal of the Done button. `target` is the Message to send a new
-    reply from (cmd_freetrial) or edit in place (callback handlers)."""
+    """Show a round's share screen (waiting text + Share-only keyboard) and
+    schedule the delayed reveal of the "Done" text/button. `target` is the
+    Message to send a new reply from (cmd_freetrial) or edit in place
+    (callback handlers)."""
     bot_link = await _freetrial_bot_link(bot)
-    text = _freetrial_round_text(rounds_done)
+    text = _freetrial_round_text(rounds_done, waiting=True)
     keyboard = _freetrial_share_only_keyboard(bot_link)
     if is_new_message:
         sent = await target.answer(
