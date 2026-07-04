@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
 from aiogram import Router, F
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -26,6 +26,8 @@ from database import (
     update_stock_status,
     get_user_primary_pincode,
     get_or_create_user,
+    has_used_share_trial,
+    activate_share_trial,
 )
 from access import check_can_add_item, compute_access, access_denied_text, REASON_ITEM_LIMIT
 from notifications import send_stock_alert, should_alert_for_price
@@ -344,10 +346,127 @@ async def cmd_start(message: Message):
         "  /select  – Select items to bulk-check or delete\n"
         "  /search  – Search your tracked products by name\n"
         "  /stores  – List all supported stores\n"
-        "  /pins    – Manage your delivery pin codes\n\n"
+        "  /pins    – Manage your delivery pin codes\n"
+        "  /freetrial – Get a bonus free trial by sharing on WhatsApp\n\n"
         "Use /add to get started!",
         parse_mode="HTML",
     )
+
+
+# ---------------------------------------------------------------------------
+# /freetrial – WhatsApp-share-gated one-time trial bonus
+# ---------------------------------------------------------------------------
+
+def _freetrial_share_text() -> str:
+    return (
+        "🎁 <b>Get a free trial!</b>\n\n"
+        "Share Ullu Alert with 5 friends or groups on WhatsApp, then confirm below.\n\n"
+        "Once done, tap the button below:"
+    )
+
+
+async def _freetrial_share_keyboard(bot) -> InlineKeyboardMarkup:
+    me = await bot.get_me()
+    bot_link = f"https://t.me/{me.username}"
+    share_text = (
+        f"🎁 I'm using Ullu Alert to track out-of-stock products and get notified "
+        f"the instant they're back in stock! Try it free: {bot_link}"
+    )
+    wa_url = f"https://wa.me/?text={quote(share_text)}"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Share on WhatsApp", url=wa_url)],
+        [InlineKeyboardButton(text="✅ I've shared it", callback_data="freetrial:shared")],
+    ])
+
+
+_FREETRIAL_ALREADY_USED_TEXT = (
+    "🚫 <b>You've already used this offer.</b>\n\n"
+    "The WhatsApp-share free trial can only be claimed once per account."
+)
+
+
+@router.message(Command("freetrial"))
+async def cmd_freetrial(message: Message):
+    user_id = message.from_user.id
+
+    if user_id == ADMIN_USER_ID:
+        await message.answer("The admin account doesn't need a trial.")
+        return
+
+    get_or_create_user(
+        user_id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name,
+    )
+
+    if has_used_share_trial(user_id):
+        await message.answer(_FREETRIAL_ALREADY_USED_TEXT, parse_mode="HTML")
+        return
+
+    await message.answer(
+        _freetrial_share_text(),
+        parse_mode="HTML",
+        reply_markup=await _freetrial_share_keyboard(message.bot),
+        disable_web_page_preview=True,
+    )
+
+
+@router.callback_query(F.data == "freetrial:shared")
+async def callback_freetrial_shared(call: CallbackQuery):
+    if has_used_share_trial(call.from_user.id):
+        await call.message.edit_text(_FREETRIAL_ALREADY_USED_TEXT, parse_mode="HTML")
+        await call.answer()
+        return
+
+    await call.message.edit_text(
+        "⚠️ <b>Are you sure you shared this in 5 WhatsApp groups/contacts?</b>\n\n"
+        "Cheating will result in your free trial being denied and you may be "
+        "permanently banned from future free trials.\n\n"
+        "Do you still want to confirm?",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Yes, I confirm", callback_data="freetrial:confirm"),
+                InlineKeyboardButton(text="🔄 Retry", callback_data="freetrial:retry"),
+            ]
+        ]),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "freetrial:retry")
+async def callback_freetrial_retry(call: CallbackQuery):
+    if has_used_share_trial(call.from_user.id):
+        await call.message.edit_text(_FREETRIAL_ALREADY_USED_TEXT, parse_mode="HTML")
+        await call.answer()
+        return
+
+    await call.message.edit_text(
+        _freetrial_share_text(),
+        parse_mode="HTML",
+        reply_markup=await _freetrial_share_keyboard(call.bot),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "freetrial:confirm")
+async def callback_freetrial_confirm(call: CallbackQuery):
+    granted, updated = activate_share_trial(call.from_user.id)
+
+    if not granted:
+        await call.message.edit_text(_FREETRIAL_ALREADY_USED_TEXT, parse_mode="HTML")
+        await call.answer()
+        return
+
+    info = compute_access(updated)
+    days_left = max(0, round(info.days_remaining or 0, 1))
+    await call.message.edit_text(
+        f"✅ <b>Free trial activated!</b>\n\n"
+        f"Thanks for sharing Ullu Alert — you now have <b>{days_left} day(s)</b> "
+        f"of access. Use /add to start tracking products!",
+        parse_mode="HTML",
+    )
+    await call.answer()
 
 
 # ---------------------------------------------------------------------------

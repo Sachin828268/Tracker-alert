@@ -119,6 +119,13 @@ def init_db():
                 FOREIGN KEY (plan_id) REFERENCES plans(id)
             )
         """)
+        # Migration: add share_trial_used flag for the WhatsApp-share-gated
+        # free trial (see /freetrial in handlers.py) — one claim per account.
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN share_trial_used INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
         # ── Approvals (full approve/reject/extend/block/unblock audit trail) ──
         conn.execute("""
@@ -534,6 +541,53 @@ def extend_access(user_id: int, days: int, admin_id: int) -> Optional[dict]:
     if row is None:
         return None
     return grant_access(user_id, row["plan_id"], days, admin_id)
+
+
+def has_used_share_trial(user_id: int) -> bool:
+    """Whether this user has already claimed the WhatsApp-share-gated trial bonus."""
+    row = get_user(user_id)
+    return bool(row and row.get("share_trial_used"))
+
+
+def activate_share_trial(user_id: int) -> tuple[bool, Optional[dict]]:
+    """
+    One-time WhatsApp-share-gated trial bonus (see /freetrial in handlers.py).
+    Returns (granted, row): granted=False (row unchanged) if this user already
+    claimed it before or has no user row yet — the check-and-set happens
+    inside this one DB call so it's the single source of truth (safe against
+    a double-tapped confirm button), not just the handler-level UX checks.
+
+    Stacks TRIAL_DAYS onto access_until using the same "extend from whichever
+    is later: now or the current expiry" logic as grant_access, but WITHOUT
+    touching plan_id/is_trial — this is a bonus-days grant, not a plan
+    change, so a paying customer keeps their plan tier and a trial/locked-out
+    user's existing classification is preserved either way.
+    """
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        if row is None or row["share_trial_used"]:
+            return False, (dict(row) if row else None)
+
+        now = datetime.now(IST)
+        base = now
+        if row["access_until"]:
+            try:
+                current_until = parse_ist(row["access_until"])
+                if current_until > now:
+                    base = current_until
+            except ValueError:
+                pass
+        new_until = (base + timedelta(days=TRIAL_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+
+        conn.execute(
+            "UPDATE users SET access_until = ?, share_trial_used = 1 WHERE user_id = ?",
+            (new_until, user_id),
+        )
+        conn.commit()
+        updated = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+
+    logger.info(f"[share_trial] user {user_id} claimed WhatsApp-share trial bonus — new access_until={new_until}")
+    return True, dict(updated)
 
 
 def set_blocked(user_id: int, blocked: bool, admin_id: int) -> bool:

@@ -41,9 +41,16 @@ STATUS_LOCKED = "locked"
 
 # Commands regular (non-admin) users can always reach regardless of access
 # status: /start so a brand-new user can create their trial row and so a
-# locked user can see their status message, and /cancel so nobody is ever
-# trapped mid-FSM-flow by an access change.
-_ALWAYS_ALLOWED_COMMANDS = {"/start", "/cancel"}
+# locked user can see their status message, /cancel so nobody is ever
+# trapped mid-FSM-flow by an access change, and /freetrial since locked-out/
+# expired users regaining access via a WhatsApp share is exactly this
+# feature's point — gating it behind access they don't have would be circular.
+_ALWAYS_ALLOWED_COMMANDS = {"/start", "/cancel", "/freetrial"}
+
+# Callback-data prefixes for button flows that must stay reachable for the
+# same reason as /freetrial above — CallbackQuery events carry no `/command`
+# text, so they aren't covered by the check above and need their own bypass.
+_ALWAYS_ALLOWED_CALLBACK_PREFIXES = ("freetrial:",)
 
 
 @dataclass
@@ -207,7 +214,10 @@ class AccessControlMiddleware(BaseMiddleware):
     Regular users must have status in (trial, active) or the event is
     swallowed here with a status/payment message instead of reaching the
     handler. /start and /cancel are always allowed through so a locked user
-    can see their status and nobody gets stuck mid-flow.
+    can see their status and nobody gets stuck mid-flow; /freetrial (and its
+    "freetrial:"-prefixed callback buttons) is always allowed through too, so
+    a locked-out/expired user can actually use the WhatsApp-share trial to
+    regain access in the first place.
     """
 
     async def __call__(
@@ -231,6 +241,9 @@ class AccessControlMiddleware(BaseMiddleware):
         if isinstance(event, Message) and event.text:
             first_token = event.text.split()[0].split("@")[0]
             if first_token in _ALWAYS_ALLOWED_COMMANDS:
+                return await handler(event, data)
+        elif isinstance(event, CallbackQuery) and event.data:
+            if event.data.startswith(_ALWAYS_ALLOWED_CALLBACK_PREFIXES):
                 return await handler(event, data)
 
         info = get_access_info(user.id)

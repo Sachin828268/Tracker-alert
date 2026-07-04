@@ -372,6 +372,7 @@ async def cmd_finduser(message: Message, command: CommandObject):
         f"📦 Plan: {info.plan['name'] if info.plan else '—'}",
         f"📊 Status: {_STATUS_LABEL[info.status]} ({_fmt_days(info.days_remaining)})",
         f"🚫 Blocked: {'yes' if u['blocked'] else 'no'}",
+        f"🎁 WhatsApp-share trial used: {'yes' if u.get('share_trial_used') else 'no'}",
         f"\n🛒 <b>Tracked items ({len(products)}):</b>",
     ]
     if products:
