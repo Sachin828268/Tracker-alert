@@ -3,7 +3,7 @@ import sqlite3
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-from config import DB_PATH, TRIAL_DAYS, SHARE_TRIAL_ROUNDS_REQUIRED
+from config import DB_PATH, TRIAL_DAYS, SHARE_TRIAL_ROUNDS_REQUIRED, ADMIN_USER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +164,10 @@ def init_db():
             existing_user_ids.add(row["user_id"])
         for row in conn.execute("SELECT DISTINCT user_id FROM pin_codes"):
             existing_user_ids.add(row["user_id"])
+        # The admin is exempt from the trial/expiry system entirely (see the
+        # permanent-access reset below) — never migrate them into a
+        # time-limited row just because they tracked a product/pin themselves.
+        existing_user_ids.discard(ADMIN_USER_ID)
 
         migrated = 0
         for uid in existing_user_ids:
@@ -184,6 +188,27 @@ def init_db():
                 f"Migrated {migrated} pre-existing user(s) into the access-control "
                 f"system as expired/awaiting-approval — review via /pending or /approve"
             )
+
+        # Self-heal: the admin should never be subject to the trial/expiry
+        # system, but a users row can still exist for them (e.g. from the
+        # migration above, before ADMIN_USER_ID was excluded from it, if the
+        # admin ever tracked a product/pin themselves) with a real,
+        # time-limited access_until — which then ages through expiry
+        # reminders and eventual lockout for the very account meant to
+        # bypass all of this. If such a row exists, reset it to a
+        # 100-years-out access_until every startup: simpler and safer than
+        # teaching compute_access (otherwise a pure function of stored data)
+        # to special-case ADMIN_USER_ID, and functionally equivalent to
+        # "never expires" for every reminder/grace/purge check that reads it.
+        admin_row = conn.execute("SELECT * FROM users WHERE user_id = ?", (ADMIN_USER_ID,)).fetchone()
+        if admin_row:
+            permanent_until = (datetime.now(IST) + timedelta(days=365 * 100)).strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute(
+                "UPDATE users SET access_until = ?, is_trial = 0, blocked = 0 WHERE user_id = ?",
+                (permanent_until, ADMIN_USER_ID),
+            )
+            conn.commit()
+            logger.info(f"Admin user {ADMIN_USER_ID} access_until reset to permanent ({permanent_until})")
     logger.info(f"Database initialized at {DB_PATH}")
 
 

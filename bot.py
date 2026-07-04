@@ -136,6 +136,13 @@ async def run_access_maintenance_cycle(bot: Bot):
     """
     users = list_all_users()
     for u in users:
+        if u["user_id"] == ADMIN_USER_ID:
+            # The admin is exempt from the entire trial/expiry system — never
+            # send them an expiry reminder or payment prompt, and never purge
+            # their data. database.py's init_db() also keeps their access_until
+            # permanently far in the future as a backstop, but this check is
+            # the direct guarantee: skip them here regardless of what's stored.
+            continue
         info = compute_access(u)
 
         if info.has_access and info.days_remaining is not None:
