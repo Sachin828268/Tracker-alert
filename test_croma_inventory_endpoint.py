@@ -66,6 +66,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 
 import httpx
 
@@ -154,16 +155,24 @@ def _print_response(label: str, status: int, headers: httpx.Headers, body_text: 
         print(body_text[:2000])
 
 
+_REQUEST_TIMEOUT_SECONDS = 30.0
+
+
 async def _try_payload(
     client: httpx.AsyncClient, request_url: str, headers: dict, label: str, payload: dict
 ) -> None:
     print(f"\n--- Trying payload {label} ---")
     print(f"  Request body: {json.dumps(payload)}")
+    print(f"  Sending... (timeout={_REQUEST_TIMEOUT_SECONDS:.0f}s)")
+    start = time.monotonic()
     try:
-        resp = await client.post(request_url, headers=headers, json=payload, timeout=60.0)
+        resp = await client.post(request_url, headers=headers, json=payload, timeout=_REQUEST_TIMEOUT_SECONDS)
     except Exception as exc:
-        print(f"  Request failed: {exc}")
+        elapsed = time.monotonic() - start
+        print(f"  Request failed after {elapsed:.1f}s: {type(exc).__name__}: {exc}")
         return
+    elapsed = time.monotonic() - start
+    print(f"  Response received after {elapsed:.1f}s")
     _print_response(label, resp.status_code, resp.headers, resp.text)
 
 
@@ -177,6 +186,17 @@ def _resolve_request_url(via_scrapedo: bool) -> str:
 
 
 async def main():
+    # `railway run` pipes stdout through a non-TTY channel, where Python
+    # defaults to full block-buffering instead of per-line flushing — prints
+    # can sit invisible in a buffer for a long time (or be lost entirely if
+    # the process is cancelled) even though the script is actually running
+    # and producing output. Force line-buffering so every print appears
+    # immediately, rather than looking like a silent, indefinite hang.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
     if len(sys.argv) < 3:
         print("Usage: python3 test_croma_inventory_endpoint.py <product_id> <pincode>")
         sys.exit(1)
