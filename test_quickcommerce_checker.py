@@ -17,15 +17,18 @@ For the clearest confirmation, right-click the Add/+ button in your browser
 _is_disabled=..." line this script prints — that's the direct correlation
 between what you see on the page and what the checker computed.
 
+The site (bigbasket/zepto/blinkit) is auto-detected from the URL — just
+pass the product URL, nothing else.
+
 Usage (run via `railway run python3 test_quickcommerce_checker.py`, wherever
 SCRAPEDO_KEY is a real credential):
 
-    python3 test_quickcommerce_checker.py <site> <product_url>
+    python3 test_quickcommerce_checker.py <product_url>
 
     e.g.
-    python3 test_quickcommerce_checker.py bigbasket https://www.bigbasket.com/pd/...
-    python3 test_quickcommerce_checker.py zepto https://www.zeptonow.com/pn/.../pvid/...
-    python3 test_quickcommerce_checker.py blinkit https://blinkit.com/prn/.../prid/...
+    python3 test_quickcommerce_checker.py https://www.bigbasket.com/pd/...
+    python3 test_quickcommerce_checker.py https://www.zeptonow.com/pn/.../pvid/...
+    python3 test_quickcommerce_checker.py https://blinkit.com/prn/.../prid/...
 """
 
 import asyncio
@@ -37,20 +40,28 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
+from checkers import detect_site
 from stock_checker import check_stock
 
 _VALID_SITES = {"bigbasket", "zepto", "blinkit"}
 
 
 async def main():
-    if len(sys.argv) < 3 or sys.argv[1] not in _VALID_SITES:
-        print("Usage: python3 test_quickcommerce_checker.py <site> <product_url>")
-        print(f"  <site> must be one of: {', '.join(sorted(_VALID_SITES))}")
+    if len(sys.argv) < 2:
+        print("Usage: python3 test_quickcommerce_checker.py <product_url>")
+        print(f"  URL must be from one of: {', '.join(sorted(_VALID_SITES))}")
         sys.exit(1)
 
-    site, url = sys.argv[1], sys.argv[2]
+    url = sys.argv[1]
+    site = detect_site(url)
+    if site not in _VALID_SITES:
+        print(f"Detected site: {site!r} — this script only covers {', '.join(sorted(_VALID_SITES))}.")
+        print("(Other stores work fine via the bot's own /check — this script is scoped "
+              "to verifying the disabled-button fix on these 3 specifically.)")
+        sys.exit(1)
+
     print(f"\n{'=' * 70}")
-    print(f"Checking {site}: {url}")
+    print(f"Detected site: {site} — Checking: {url}")
     print(f"{'=' * 70}\n")
 
     in_stock, price = await check_stock(url, site, pincode=None, caller="manual-verification")
