@@ -69,6 +69,7 @@ SUPPORTED_SITES = {
     "reliancedigital": ["reliancedigital.in"],
     "apple":           ["apple.com"],
     "oneplus":         ["oneplus.in"],
+    "tataneu":         ["tataneu.com"],
 }
 
 # Domains handled specially in /add with a "Coming Soon" message instead of

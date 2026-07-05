@@ -114,7 +114,7 @@ async def _fetch_html(scraper_url: str, site: str) -> str:
 # stops holding, re-add "flipkart" here.
 _JS_SITES = {
     "zepto", "bigbasket", "blinkit", "croma", "instamart", "myntra",
-    "jiomart", "reliancedigital", "oneplus",
+    "jiomart", "reliancedigital", "oneplus", "tataneu",
 }
 
 # No sites currently support pincode-specific stock via simple cookie injection.
