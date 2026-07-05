@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% set active = 'users' %}
+{% block title %}Users{% endblock %}
+{% block body %}
+<h1>All users ({{ rows|length }})</h1>
+<form class="search" method="get">
+  <input type="text" name="q" value="{{ q }}" placeholder="Search by ID or name…">
+  <button type="submit">Search</button>
+</form>
+{% if rows %}
+<div class="tablewrap">
+  <table>
+    <thead>
+      <tr><th>User ID</th><th>Name</th><th>Status</th><th>Plan</th><th>Access</th><th>Items</th><th>Blocked</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.user_id }}</td>
+        <td>{{ r.name }}</td>
+        <td><span class="pill {{ r.status_class }}">{{ r.status }}</span></td>
+        <td>{{ r.plan }}</td>
+        <td>{{ r.days }}</td>
+        <td>{{ r.items }}</td>
+        <td>{{ '🚫' if r.blocked else '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty">No users match{{ ' “' + q + '”' if q else '' }}.</p>
+{% endif %}
+{% endblock %}

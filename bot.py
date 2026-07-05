@@ -235,6 +235,14 @@ async def main():
     _log_startup_checks()
     init_db()
 
+    # Admin web dashboard: runs in a daemon thread in this same process (so it
+    # shares this DB file), bound to Railway's $PORT. No-ops if
+    # ADMIN_DASHBOARD_PASSWORD isn't set, so this changes nothing for a deploy
+    # that hasn't configured it. Never raises — a dashboard failure won't stop
+    # the bot. Started after init_db() so the schema exists before any request.
+    from dashboard import start_dashboard_in_background
+    start_dashboard_in_background()
+
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),

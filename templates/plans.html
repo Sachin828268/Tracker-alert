@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% set active = 'plans' %}
+{% block title %}Plans{% endblock %}
+{% block body %}
+<h1>Plans ({{ plans|length }})</h1>
+{% if plans %}
+<div class="tablewrap">
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Name</th><th>Price</th><th>Max items</th><th>Sites</th><th>Trial plan</th><th>Active</th></tr>
+    </thead>
+    <tbody>
+      {% for p in plans %}
+      <tr>
+        <td>{{ p.id }}</td>
+        <td>{{ p.name }}</td>
+        <td>₹{{ '{:,.0f}'.format(p.price) }}</td>
+        <td>{{ p.max_items }}</td>
+        <td>{{ p.sites }}</td>
+        <td>{{ '✓' if p.is_trial_plan else '—' }}</td>
+        <td>{{ '✓' if p.is_active else '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty">No plans defined.</p>
+{% endif %}
+<p class="note">Add / edit / delete forms arrive with the write-actions phase.</p>
+{% endblock %}

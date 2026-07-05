@@ -23,8 +23,18 @@ def parse_ist(raw: str) -> datetime:
 
 
 def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    # WAL + busy_timeout added so the bot's asyncio thread and the admin
+    # dashboard's Flask worker threads can read/write the same SQLite file
+    # concurrently without intermittent "database is locked" errors. WAL lets
+    # readers and a writer coexist; busy_timeout makes a blocked writer wait
+    # (up to 10s) for a lock instead of erroring immediately. Each caller still
+    # opens its own connection and uses it within one thread, so the default
+    # check_same_thread stays safe. journal_mode=WAL persists at the DB level;
+    # re-asserting it per connection is cheap and harmless.
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     return conn
 
 

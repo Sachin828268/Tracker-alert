@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% set active = 'pending' %}
+{% block title %}Pending{% endblock %}
+{% block body %}
+<h1>Pending ({{ rows|length }})</h1>
+{% if rows %}
+<div class="tablewrap">
+  <table>
+    <thead>
+      <tr><th>User ID</th><th>Name</th><th>Kind</th><th>Access left</th><th>Grace left</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.user_id }}</td>
+        <td>{{ r.name }}</td>
+        <td>{{ r.kind }}</td>
+        <td>{{ r.days }}</td>
+        <td>{{ r.grace_days }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty">No users in trial or awaiting approval.</p>
+{% endif %}
+<p class="note">Approve / reject buttons arrive with the write-actions phase.</p>
+{% endblock %}

@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% set active = 'home' %}
+{% block title %}Stats{% endblock %}
+{% block body %}
+<h1>Overview</h1>
+<div class="cards">
+  <div class="card"><div class="n">{{ stats.total_users }}</div><div class="l">Total users</div></div>
+  <div class="card"><div class="n">{{ stats.active }}</div><div class="l">Active (paid)</div></div>
+  <div class="card"><div class="n">{{ stats.trial }}</div><div class="l">In trial</div></div>
+  <div class="card"><div class="n">{{ stats.grace }}</div><div class="l">Expired (grace)</div></div>
+  <div class="card"><div class="n">{{ stats.locked }}</div><div class="l">Locked</div></div>
+  <div class="card"><div class="n">₹{{ '{:,.0f}'.format(stats.revenue) }}</div><div class="l">Revenue this month</div></div>
+  <div class="card"><div class="n">{{ stats.total_products }}</div><div class="l">Tracked items</div></div>
+  <div class="card"><div class="n">{{ stats.active_plans }}</div><div class="l">Active plans</div></div>
+  <div class="card"><div class="n">{{ stats.top_store }}</div><div class="l">Top store</div></div>
+</div>
+<p class="note">Read-only view. Approve / block / extend / broadcast actions are coming in the next phase.</p>
+{% endblock %}
