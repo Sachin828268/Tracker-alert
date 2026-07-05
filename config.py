@@ -47,13 +47,22 @@ PLAYWRIGHT_HEADLESS = True
 PLAYWRIGHT_TIMEOUT = 30000  # ms
 
 # Supported sites
+#
+# Croma deliberately excluded (not "not yet built" — actively removed): the
+# checker was confirmed to flip between correct and fully-inverted results
+# across consecutive checks, then later degraded to reporting every product
+# OOS regardless of real status, with no root cause identified. Shipping
+# that behavior would produce false alerts (or false silence) for users, so
+# it's pulled from /add and /stores until the underlying cause is found and
+# fixed. checkers/croma.py, its CHECKER_MAP/_JS_SITES entries, and
+# config.UNRELIABLE_SITES are all left intact — re-adding "croma" here is
+# the only step needed to bring it back once fixed.
 SUPPORTED_SITES = {
     "amazon":          ["amazon.in", "amazon.com"],
     "flipkart":        ["flipkart.com"],
     "zepto":           ["zeptonow.com", "zepto.com"],
     "bigbasket":       ["bigbasket.com"],
     "blinkit":         ["blinkit.com"],
-    "croma":           ["croma.com"],
     "instamart":       ["swiggy.com"],
     "myntra":          ["myntra.com"],
     "jiomart":         ["jiomart.com"],
@@ -61,3 +70,7 @@ SUPPORTED_SITES = {
     "apple":           ["apple.com"],
     "oneplus":         ["oneplus.in"],
 }
+
+# Domains handled specially in /add with a "Coming Soon" message instead of
+# the generic "unsupported site" one — see handlers.py's _coming_soon_message.
+COMING_SOON_DOMAINS = {"croma.com"}

@@ -42,6 +42,7 @@ from config import (
     SHARE_TRIAL_ROUNDS_REQUIRED,
     SHARE_TRIAL_TAP_DELAY_SECONDS,
     UNRELIABLE_SITES,
+    COMING_SOON_DOMAINS,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,8 +73,29 @@ def _format_last_checked(raw) -> str:
 
 _SUPPORTED_SITES_TEXT = (
     "amazon.in · flipkart.com · zeptonow.com · bigbasket.com · "
-    "blinkit.com · croma.com · swiggy.com (Instamart) · myntra.com"
+    "blinkit.com · swiggy.com (Instamart) · myntra.com"
 )
+
+_COMING_SOON_TEXT = (
+    "🚧 <b>Croma tracking is temporarily unavailable.</b>\n\n"
+    "We found reliability issues with Croma stock detection and pulled it "
+    "while we fix them, rather than risk sending you wrong alerts. "
+    "Check back soon, or track this product on another supported store "
+    "in the meantime."
+)
+
+
+def _coming_soon_message(url: str) -> str | None:
+    """
+    Return a "coming soon" message for a domain in config.COMING_SOON_DOMAINS
+    (deliberately pulled, not simply unbuilt), or None otherwise — lets /add
+    give an honest, specific reason instead of lumping it in with genuinely
+    unsupported sites.
+    """
+    host = urlparse(url).netloc.lower().replace("www.", "")
+    if any(host == d or host.endswith("." + d) for d in COMING_SOON_DOMAINS):
+        return _COMING_SOON_TEXT
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +139,11 @@ async def _process_bulk(message: Message, entries: list[tuple[str, str]]) -> Non
     for idx, (name, url) in enumerate(entries):
         site = detect_site(url)
         if site is None:
-            results.append(f"❌ Unsupported site — <b>{name}</b>: <code>{url[:60]}</code>")
+            coming_soon = _coming_soon_message(url)
+            if coming_soon:
+                results.append(f"🚧 Coming soon — <b>{name}</b>: <code>{url[:60]}</code>")
+            else:
+                results.append(f"❌ Unsupported site — <b>{name}</b>: <code>{url[:60]}</code>")
             continue
         # Re-checked per iteration (not once before the loop) so the item
         # count reflects items already added earlier in this same bulk batch —
@@ -658,7 +684,11 @@ async def receive_link(message: Message, state: FSMContext):
         for idx, url in enumerate(urls):
             site = detect_site(url)
             if site is None:
-                results.append(f"❌ Unsupported site: <code>{url[:60]}</code>")
+                coming_soon = _coming_soon_message(url)
+                if coming_soon:
+                    results.append(f"🚧 Coming soon: <code>{url[:60]}</code>")
+                else:
+                    results.append(f"❌ Unsupported site: <code>{url[:60]}</code>")
                 continue
             allowed, reason, limit_msg = check_can_add_item(user_id, site)
             if not allowed:
@@ -693,12 +723,16 @@ async def receive_link(message: Message, state: FSMContext):
 
     site = detect_site(url)
     if site is None:
-        await message.answer(
-            "❌ <b>Unsupported website.</b>\n\n"
-            f"Supported: {_SUPPORTED_SITES_TEXT}\n\n"
-            "Please send a link from one of these sites.",
-            parse_mode="HTML",
-        )
+        coming_soon = _coming_soon_message(url)
+        if coming_soon:
+            await message.answer(coming_soon, parse_mode="HTML")
+        else:
+            await message.answer(
+                "❌ <b>Unsupported website.</b>\n\n"
+                f"Supported: {_SUPPORTED_SITES_TEXT}\n\n"
+                "Please send a link from one of these sites.",
+                parse_mode="HTML",
+            )
         return
 
     # Checked here (before the Amazon target-price sub-flow) so a user who's
