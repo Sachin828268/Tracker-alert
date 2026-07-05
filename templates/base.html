@@ -45,6 +45,20 @@
                      color:#fff; cursor:pointer; }
     .empty { color:var(--muted); padding:20px; }
     .note { color:var(--muted); font-size:13px; margin-top:16px; }
+    .flash { padding:10px 14px; border-radius:8px; margin-bottom:14px; font-size:14px; }
+    .flash.ok { color:var(--ok); background:color-mix(in srgb, var(--ok) 14%, transparent); }
+    .flash.bad { color:var(--bad); background:color-mix(in srgb, var(--bad) 14%, transparent); }
+    form.inline { display:inline; }
+    .btn { padding:5px 10px; border:1px solid var(--line); border-radius:7px; background:var(--card);
+           color:var(--ink); cursor:pointer; font-size:13px; }
+    .btn:hover { border-color:var(--accent); color:var(--accent); }
+    .btn.bad:hover { border-color:var(--bad); color:var(--bad); }
+    .btn.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .actions { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+    .actions input[type=number], .actions input[type=text], .actions select {
+      padding:5px 8px; border:1px solid var(--line); border-radius:7px;
+      background:var(--card); color:var(--ink); font-size:13px; }
+    .actions input[type=number] { width:64px; }
   </style>
 </head>
 <body>
@@ -56,12 +70,18 @@
       <a href="{{ url_for('users') }}" class="{{ 'active' if active=='users' }}">Users</a>
       <a href="{{ url_for('pending') }}" class="{{ 'active' if active=='pending' }}">Pending</a>
       <a href="{{ url_for('plans') }}" class="{{ 'active' if active=='plans' }}">Plans</a>
+      <a href="{{ url_for('broadcast') }}" class="{{ 'active' if active=='broadcast' }}">Broadcast</a>
     </nav>
     <span class="spacer"></span>
     <a class="logout" href="{{ url_for('logout') }}">Log out</a>
   </header>
   {% endif %}
   <main>
+    {% if session.get('authed') %}
+      {% for category, msg in messages %}
+        <div class="flash {{ category }}">{{ msg }}</div>
+      {% endfor %}
+    {% endif %}
     {% block body %}{% endblock %}
   </main>
 </body>

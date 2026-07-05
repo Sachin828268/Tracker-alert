@@ -75,24 +75,47 @@ async def _safe_send(bot: Bot, user_id: int, text: str) -> bool:
         return False
 
 
-async def send_approval_notice(bot: Bot, user_id: int, plan_name: str, days: int, access_until: str):
-    await _safe_send(
-        bot, user_id,
+# ── Message-text builders ────────────────────────────────────────────────────
+# Pure functions returning the HTML message body, kept separate from the async
+# senders so the web dashboard (which sends via the Telegram HTTP API from a
+# non-async thread, not via the aiogram Bot object) reuses the EXACT same text
+# the bot sends — one source of truth, no drift between the two surfaces.
+
+def approval_notice_text(plan_name: str, days: int, access_until: str) -> str:
+    return (
         "✅ <b>Access approved!</b>\n\n"
         f"📦 Plan: <b>{plan_name}</b>\n"
         f"➕ Days added: <b>{days}</b>\n"
         f"📅 Access until: <b>{access_until}</b>\n\n"
-        "Thanks for your payment — you're all set. Use /list to see your tracked items.",
+        "Thanks for your payment — you're all set. Use /list to see your tracked items."
     )
+
+
+def rejection_notice_text(reason: str | None) -> str:
+    reason_line = f"\n\nReason: {reason}" if reason else ""
+    return (
+        "❌ <b>Your access request was not approved.</b>"
+        f"{reason_line}\n\nContact the admin if you have questions."
+    )
+
+
+def block_notice_text() -> str:
+    return (
+        "🚫 <b>Your access has been blocked by the admin.</b>\n\n"
+        "Contact the admin if you believe this is a mistake."
+    )
+
+
+def unblock_notice_text() -> str:
+    return "✅ <b>Your access has been restored.</b> Welcome back!"
+
+
+async def send_approval_notice(bot: Bot, user_id: int, plan_name: str, days: int, access_until: str):
+    await _safe_send(bot, user_id, approval_notice_text(plan_name, days, access_until))
 
 
 async def send_rejection_notice(bot: Bot, user_id: int, reason: str | None):
-    reason_line = f"\n\nReason: {reason}" if reason else ""
-    await _safe_send(
-        bot, user_id,
-        "❌ <b>Your access request was not approved.</b>"
-        f"{reason_line}\n\nContact the admin if you have questions.",
-    )
+    await _safe_send(bot, user_id, rejection_notice_text(reason))
 
 
 async def send_expiry_reminder(bot: Bot, user_id: int, hours_left: float, is_trial: bool):
@@ -107,15 +130,11 @@ async def send_expiry_reminder(bot: Bot, user_id: int, hours_left: float, is_tri
 
 
 async def send_block_notice(bot: Bot, user_id: int):
-    await _safe_send(
-        bot, user_id,
-        "🚫 <b>Your access has been blocked by the admin.</b>\n\n"
-        "Contact the admin if you believe this is a mistake.",
-    )
+    await _safe_send(bot, user_id, block_notice_text())
 
 
 async def send_unblock_notice(bot: Bot, user_id: int):
-    await _safe_send(bot, user_id, "✅ <b>Your access has been restored.</b> Welcome back!")
+    await _safe_send(bot, user_id, unblock_notice_text())
 
 
 async def send_data_purged_notice(bot: Bot, user_id: int, count: int):

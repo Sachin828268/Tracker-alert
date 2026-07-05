@@ -1,27 +1,26 @@
 """
 dashboard.py
 ~~~~~~~~~~~~
-Password-protected web admin dashboard, an ADDITIONAL way to do what the
-Telegram admin commands already do — the bot and its /approve, /block, etc.
-commands are untouched and keep working.
+Password-protected web admin dashboard — an ADDITIONAL, form-based way to do
+what the Telegram admin commands already do. The bot and its /approve,
+/block, etc. commands are untouched and keep working.
 
 Runs in a background thread inside the bot's own process (see
 start_dashboard_in_background, called from bot.py), so it shares the exact
 same SQLite database file — no duplicated data, no separate service, no
-Railway volume-sharing problem (a second Railway service can't mount the
-bot's volume). Every DB operation calls the SAME database.py / access.py
-functions the bot uses, so the two can never drift apart.
+Railway volume-sharing problem. Every DB operation calls the SAME
+database.py / access.py functions the bot uses, so the two can never drift.
 
-PHASE 1 (this file, so far): login + read-only views (stats, users,
-pending, plans). Write actions (approve/reject/block/extend/broadcast,
-plan CRUD) are deliberately NOT here yet — added in a later phase once the
-read-only dashboard is verified against the live DB.
+Write actions (approve/reject/block/extend, plan CRUD, broadcast) record the
+audit trail under config.ADMIN_USER_ID (the dashboard operator is the admin)
+and notify affected users via the Telegram HTTP API using the SAME message
+text builders in notifications.py that the bot's own commands use — so an
+action taken from the web reaches the user identically to one via Telegram.
 
 Env vars:
     ADMIN_DASHBOARD_PASSWORD  required — dashboard won't start without it
-    SECRET_KEY                recommended — stable Flask session signing key;
-                              if unset, a random one is generated per start
-                              (works, but every restart logs you out)
+    SECRET_KEY                recommended — stable Flask session signing key
+    BOT_TOKEN                 used to send Telegram notifications/broadcasts
     PORT                      injected by Railway; the web server binds here
 """
 
@@ -33,8 +32,13 @@ from collections import Counter
 from datetime import datetime
 from functools import wraps
 
-from flask import Flask, redirect, render_template, request, session, url_for
+import httpx
+from flask import (
+    Flask, abort, flash, get_flashed_messages, redirect, render_template,
+    request, session, url_for,
+)
 
+from config import ADMIN_USER_ID, BOT_TOKEN
 from access import (
     compute_access,
     STATUS_TRIAL,
@@ -45,10 +49,25 @@ from access import (
 from database import (
     IST,
     list_all_users,
+    get_user,
     list_plans,
     list_products,
     get_all_products,
     get_approvals_since,
+    grant_access,
+    reject_user,
+    extend_access,
+    set_blocked,
+    add_plan,
+    edit_plan,
+    delete_plan,
+    get_plan_by_id,
+)
+from notifications import (
+    approval_notice_text,
+    rejection_notice_text,
+    block_notice_text,
+    unblock_notice_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,6 +85,8 @@ STATUS_CLASS = {
     STATUS_LOCKED: "bad",
 }
 
+_EDITABLE_PLAN_FIELDS = ("name", "price", "max_items", "sites", "is_trial_plan", "is_active")
+
 
 def _fmt_days(days):
     if days is None:
@@ -79,6 +100,31 @@ def _fmt_days(days):
 
 def _display_name(u: dict) -> str:
     return u.get("first_name") or (f"@{u['username']}" if u.get("username") else str(u["user_id"]))
+
+
+def _tg_send(user_id: int, text: str) -> bool:
+    """
+    Send an HTML Telegram message via the Bot API directly (not the aiogram
+    Bot object, which lives on the bot's event loop in another thread). Logs
+    and swallows failures — a notification that fails (e.g. the user blocked
+    the bot) must not fail the admin action that triggered it. Returns success.
+    """
+    if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+        logger.warning("[dashboard] BOT_TOKEN not set — cannot send Telegram notification")
+        return False
+    try:
+        resp = httpx.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json={"chat_id": user_id, "text": text, "parse_mode": "HTML"},
+            timeout=15.0,
+        )
+        if resp.status_code != 200:
+            logger.error(f"[dashboard] Telegram send to {user_id} failed: {resp.status_code} {resp.text[:200]}")
+            return False
+        return True
+    except Exception as exc:
+        logger.error(f"[dashboard] Telegram send to {user_id} errored: {exc}")
+        return False
 
 
 def create_app() -> Flask:
@@ -101,6 +147,25 @@ def create_app() -> Flask:
             return view(*args, **kwargs)
         return wrapped
 
+    # ── CSRF: a per-session token embedded in every form, checked on POST ─────
+    def _csrf_token() -> str:
+        tok = session.get("csrf")
+        if not tok:
+            tok = secrets.token_hex(16)
+            session["csrf"] = tok
+        return tok
+
+    @app.context_processor
+    def _inject():
+        return {"csrf_token": _csrf_token, "messages": get_flashed_messages(with_categories=True)}
+
+    @app.before_request
+    def _csrf_protect():
+        if request.method == "POST" and request.endpoint != "login":
+            sent = request.form.get("csrf")
+            if not sent or not hmac.compare_digest(sent, session.get("csrf", "")):
+                abort(400, "CSRF token missing or invalid")
+
     # ── Auth ─────────────────────────────────────────────────────────────────
     @app.route("/login", methods=["GET", "POST"])
     def login():
@@ -108,12 +173,9 @@ def create_app() -> Flask:
         if request.method == "POST":
             supplied = request.form.get("password", "")
             expected = _password()
-            # constant-time compare so response timing can't be used to guess
-            # the password character-by-character
             if expected and hmac.compare_digest(supplied, expected):
                 session["authed"] = True
                 dest = request.args.get("next") or url_for("home")
-                # only allow same-site relative redirects
                 if not dest.startswith("/"):
                     dest = url_for("home")
                 return redirect(dest)
@@ -161,11 +223,13 @@ def create_app() -> Flask:
         for u in list_all_users():
             info = compute_access(u)
             name = _display_name(u)
-            if q and q not in str(u["user_id"]) and q not in name.lower():
+            uname = f"@{u['username']}" if u.get("username") else "—"
+            if q and q not in str(u["user_id"]) and q not in name.lower() and q not in uname.lower():
                 continue
             rows.append({
                 "user_id": u["user_id"],
                 "name": name,
+                "username": uname,
                 "status": STATUS_LABEL.get(info.status, info.status),
                 "status_class": STATUS_CLASS.get(info.status, ""),
                 "plan": info.plan["name"] if info.plan else "—",
@@ -173,7 +237,7 @@ def create_app() -> Flask:
                 "blocked": bool(u.get("blocked")),
                 "items": len(list_products(u["user_id"])),
             })
-        return render_template("users.html", rows=rows, q=request.args.get("q") or "")
+        return render_template("users.html", rows=rows, q=request.args.get("q") or "", plans=list_plans())
 
     @app.route("/pending")
     @login_required
@@ -191,12 +255,154 @@ def create_app() -> Flask:
                     "days": _fmt_days(info.days_remaining),
                     "grace_days": _fmt_days(info.grace_days_remaining) if info.grace_days_remaining else "—",
                 })
-        return render_template("pending.html", rows=rows)
+        return render_template("pending.html", rows=rows, plans=list_plans(active_only=True))
 
     @app.route("/plans")
     @login_required
     def plans():
-        return render_template("plans.html", plans=list_plans())
+        return render_template("plans.html", plans=list_plans(), fields=_EDITABLE_PLAN_FIELDS)
+
+    @app.route("/broadcast")
+    @login_required
+    def broadcast():
+        active = [u for u in list_all_users() if compute_access(u).has_access]
+        return render_template("broadcast.html", active_count=len(active))
+
+    # ── Write actions ────────────────────────────────────────────────────────
+    def _require_user(uid: int) -> dict:
+        u = get_user(uid)
+        if u is None:
+            flash(f"No user with id {uid}.", "bad")
+        return u
+
+    @app.route("/users/<int:uid>/block", methods=["POST"])
+    @login_required
+    def block_user(uid):
+        if _require_user(uid) is None:
+            return redirect(url_for("users"))
+        if set_blocked(uid, True, ADMIN_USER_ID):
+            _tg_send(uid, block_notice_text())
+            flash(f"User {uid} blocked.", "ok")
+        else:
+            flash(f"Could not block user {uid}.", "bad")
+        return redirect(request.referrer or url_for("users"))
+
+    @app.route("/users/<int:uid>/unblock", methods=["POST"])
+    @login_required
+    def unblock_user(uid):
+        if _require_user(uid) is None:
+            return redirect(url_for("users"))
+        if set_blocked(uid, False, ADMIN_USER_ID):
+            _tg_send(uid, unblock_notice_text())
+            flash(f"User {uid} unblocked.", "ok")
+        else:
+            flash(f"Could not unblock user {uid}.", "bad")
+        return redirect(request.referrer or url_for("users"))
+
+    @app.route("/users/<int:uid>/extend", methods=["POST"])
+    @login_required
+    def extend_user(uid):
+        if _require_user(uid) is None:
+            return redirect(url_for("users"))
+        try:
+            days = int(request.form.get("days", "").strip())
+            if days <= 0:
+                raise ValueError
+        except ValueError:
+            flash("Days must be a positive whole number.", "bad")
+            return redirect(request.referrer or url_for("users"))
+        updated = extend_access(uid, days, ADMIN_USER_ID)
+        if updated:
+            plan = get_plan_by_id(updated["plan_id"]) if updated.get("plan_id") else None
+            _tg_send(uid, approval_notice_text(
+                plan["name"] if plan else "your plan", days, updated["access_until"]))
+            flash(f"Extended user {uid} by {days} day(s).", "ok")
+        else:
+            flash(f"Could not extend user {uid}.", "bad")
+        return redirect(request.referrer or url_for("users"))
+
+    @app.route("/pending/<int:uid>/approve", methods=["POST"])
+    @login_required
+    def approve_user(uid):
+        if _require_user(uid) is None:
+            return redirect(url_for("pending"))
+        try:
+            plan_id = int(request.form.get("plan_id", ""))
+            days = int(request.form.get("days", "").strip())
+            if days <= 0:
+                raise ValueError
+        except ValueError:
+            flash("Pick a plan and a positive number of days.", "bad")
+            return redirect(url_for("pending"))
+        plan = get_plan_by_id(plan_id)
+        if plan is None:
+            flash("That plan no longer exists.", "bad")
+            return redirect(url_for("pending"))
+        updated = grant_access(uid, plan_id, days, ADMIN_USER_ID)
+        _tg_send(uid, approval_notice_text(plan["name"], days, updated["access_until"]))
+        flash(f"Approved user {uid} on {plan['name']} for {days} day(s).", "ok")
+        return redirect(url_for("pending"))
+
+    @app.route("/pending/<int:uid>/reject", methods=["POST"])
+    @login_required
+    def reject_user_route(uid):
+        if _require_user(uid) is None:
+            return redirect(url_for("pending"))
+        reason = (request.form.get("reason") or "").strip() or None
+        if reject_user(uid, ADMIN_USER_ID, reason):
+            _tg_send(uid, rejection_notice_text(reason))
+            flash(f"Rejected user {uid}.", "ok")
+        else:
+            flash(f"Could not reject user {uid}.", "bad")
+        return redirect(url_for("pending"))
+
+    @app.route("/plans/add", methods=["POST"])
+    @login_required
+    def plan_add():
+        name = (request.form.get("name") or "").strip()
+        sites = (request.form.get("sites") or "all").strip() or "all"
+        try:
+            price = float(request.form.get("price", "").strip())
+            max_items = int(request.form.get("max_items", "").strip())
+            if not name or price < 0 or max_items <= 0:
+                raise ValueError
+        except ValueError:
+            flash("Name, a non-negative price, and a positive max-items are required.", "bad")
+            return redirect(url_for("plans"))
+        ok, msg = add_plan(name, price, max_items, sites)
+        flash(msg, "ok" if ok else "bad")
+        return redirect(url_for("plans"))
+
+    @app.route("/plans/<int:pid>/edit", methods=["POST"])
+    @login_required
+    def plan_edit(pid):
+        field = request.form.get("field", "")
+        value = (request.form.get("value") or "").strip()
+        if field not in _EDITABLE_PLAN_FIELDS:
+            flash(f"Field '{field}' is not editable.", "bad")
+            return redirect(url_for("plans"))
+        ok, msg = edit_plan(pid, field, value)
+        flash(msg, "ok" if ok else "bad")
+        return redirect(url_for("plans"))
+
+    @app.route("/plans/<int:pid>/delete", methods=["POST"])
+    @login_required
+    def plan_delete(pid):
+        ok, msg = delete_plan(pid)
+        flash(msg, "ok" if ok else "bad")
+        return redirect(url_for("plans"))
+
+    @app.route("/broadcast/send", methods=["POST"])
+    @login_required
+    def broadcast_send():
+        text = (request.form.get("text") or "").strip()
+        if not text:
+            flash("Message can't be empty.", "bad")
+            return redirect(url_for("broadcast"))
+        active = [u for u in list_all_users() if compute_access(u).has_access]
+        sent = sum(1 for u in active if _tg_send(u["user_id"], f"📣 {text}"))
+        flash(f"Broadcast sent to {sent}/{len(active)} active user(s).", "ok")
+        return redirect(url_for("broadcast"))
 
     return app
 

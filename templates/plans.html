@@ -7,7 +7,8 @@
 <div class="tablewrap">
   <table>
     <thead>
-      <tr><th>ID</th><th>Name</th><th>Price</th><th>Max items</th><th>Sites</th><th>Trial plan</th><th>Active</th></tr>
+      <tr><th>ID</th><th>Name</th><th>Price</th><th>Max items</th><th>Sites</th>
+          <th>Trial</th><th>Active</th><th>Edit field</th><th></th></tr>
     </thead>
     <tbody>
       {% for p in plans %}
@@ -19,6 +20,23 @@
         <td>{{ p.sites }}</td>
         <td>{{ '✓' if p.is_trial_plan else '—' }}</td>
         <td>{{ '✓' if p.is_active else '—' }}</td>
+        <td>
+          <form class="inline actions" method="post" action="{{ url_for('plan_edit', pid=p.id) }}">
+            <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+            <select name="field">
+              {% for f in fields %}<option value="{{ f }}">{{ f }}</option>{% endfor %}
+            </select>
+            <input type="text" name="value" placeholder="new value" required>
+            <button class="btn" type="submit">Save</button>
+          </form>
+        </td>
+        <td>
+          <form class="inline" method="post" action="{{ url_for('plan_delete', pid=p.id) }}"
+                onsubmit="return confirm('Delete plan “{{ p.name }}”? (Only works if no users are on it.)');">
+            <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+            <button class="btn bad" type="submit">Delete</button>
+          </form>
+        </td>
       </tr>
       {% endfor %}
     </tbody>
@@ -27,5 +45,17 @@
 {% else %}
 <p class="empty">No plans defined.</p>
 {% endif %}
-<p class="note">Add / edit / delete forms arrive with the write-actions phase.</p>
+
+<h1 style="margin-top:28px;">Add a plan</h1>
+<div class="card">
+  <form class="actions" method="post" action="{{ url_for('plan_add') }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <input type="text" name="name" placeholder="Name" required>
+    <input type="number" name="price" step="0.01" min="0" placeholder="Price (₹)" required>
+    <input type="number" name="max_items" min="1" placeholder="Max items" required>
+    <input type="text" name="sites" placeholder="Sites (default: all)">
+    <button class="btn primary" type="submit">Add plan</button>
+  </form>
+  <p class="note">Sites: <code>all</code>, or a comma-separated list (e.g. <code>amazon,flipkart</code>).</p>
+</div>
 {% endblock %}

@@ -7,7 +7,7 @@
 <div class="tablewrap">
   <table>
     <thead>
-      <tr><th>User ID</th><th>Name</th><th>Kind</th><th>Access left</th><th>Grace left</th></tr>
+      <tr><th>User ID</th><th>Name</th><th>Kind</th><th>Access left</th><th>Grace left</th><th>Approve / Reject</th></tr>
     </thead>
     <tbody>
       {% for r in rows %}
@@ -17,6 +17,25 @@
         <td>{{ r.kind }}</td>
         <td>{{ r.days }}</td>
         <td>{{ r.grace_days }}</td>
+        <td>
+          <div class="actions">
+            <form class="inline actions" method="post" action="{{ url_for('approve_user', uid=r.user_id) }}">
+              <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+              <select name="plan_id" required>
+                <option value="" disabled selected>Plan…</option>
+                {% for p in plans %}<option value="{{ p.id }}">{{ p.name }} (₹{{ '{:,.0f}'.format(p.price) }})</option>{% endfor %}
+              </select>
+              <input type="number" name="days" min="1" placeholder="days" required>
+              <button class="btn primary" type="submit">Approve</button>
+            </form>
+            <form class="inline actions" method="post" action="{{ url_for('reject_user_route', uid=r.user_id) }}"
+                  onsubmit="return confirm('Reject user {{ r.user_id }}?');">
+              <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+              <input type="text" name="reason" placeholder="reason (optional)">
+              <button class="btn bad" type="submit">Reject</button>
+            </form>
+          </div>
+        </td>
       </tr>
       {% endfor %}
     </tbody>
@@ -25,5 +44,5 @@
 {% else %}
 <p class="empty">No users in trial or awaiting approval.</p>
 {% endif %}
-<p class="note">Approve / reject buttons arrive with the write-actions phase.</p>
+{% if not plans %}<p class="note">No active plans exist yet — create one on the Plans page before approving.</p>{% endif %}
 {% endblock %}

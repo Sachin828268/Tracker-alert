@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% set active = 'broadcast' %}
+{% block title %}Broadcast{% endblock %}
+{% block body %}
+<h1>Broadcast</h1>
+<div class="card">
+  <p class="note" style="margin-top:0;">
+    Sends an HTML message to all <b>{{ active_count }}</b> user(s) with active access
+    (trial or paid). Prefixed with 📣 automatically, matching the bot's /broadcast.
+  </p>
+  <form method="post" action="{{ url_for('broadcast_send') }}"
+        onsubmit="return confirm('Send this message to all {{ active_count }} active user(s)?');">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <textarea name="text" rows="5" placeholder="Your message… (HTML allowed: <b>, <i>, <a href>)"
+              style="width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font:inherit;"
+              required></textarea>
+    <div style="margin-top:12px;">
+      <button class="btn primary" type="submit">Send to {{ active_count }} user(s)</button>
+    </div>
+  </form>
+</div>
+{% endblock %}
