@@ -7,6 +7,7 @@ bot.py imports `router` from handlers.py — handlers.py importing back from
 bot.py would be circular.
 """
 
+import html
 import logging
 
 from aiogram import Bot
@@ -96,6 +97,19 @@ def rejection_notice_text(reason: str | None) -> str:
     return (
         "❌ <b>Your access request was not approved.</b>"
         f"{reason_line}\n\nContact the admin if you have questions."
+    )
+
+
+def item_removed_text(product_name: str) -> str:
+    # Sent when the admin removes a tracked item from the dashboard. The
+    # product name is user-supplied and this goes out as parse_mode=HTML, so
+    # it's escaped here to avoid breaking the message (or injecting markup) on
+    # names containing <, >, or &.
+    name = html.escape(product_name or "your item")
+    return (
+        f"🦉 Ullu removed: {name}\n\n"
+        "To keep the bot fast, accurate, and running smoothly for everyone, "
+        "some items get cleared. Re-add anytime with /add!"
     )
 
 

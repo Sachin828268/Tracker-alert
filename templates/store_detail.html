@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% set active = 'stores' %}
+{% block title %}{{ site.capitalize() }} items{% endblock %}
+{% block body %}
+<p class="note" style="margin-top:0;"><a class="rowlink" href="{{ url_for('stores') }}">← Stores</a></p>
+<h1>{{ site.capitalize() }} — {{ items|length }} tracked item(s)</h1>
+{% if items %}
+<div class="tablewrap">
+  <table>
+    <thead><tr><th>Product</th><th>Status</th><th>Tracked by</th><th>Link</th></tr></thead>
+    <tbody>
+      {% for i in items %}
+      <tr>
+        <td>{{ i.name }}</td>
+        <td><span class="pill {{ 'ok' if i.in_stock else 'bad' }}">{{ 'In stock' if i.in_stock else 'Out of stock' }}</span></td>
+        <td><a class="rowlink" href="{{ url_for('user_detail', uid=i.user_id) }}">{{ i.user_name }}</a></td>
+        <td><a class="rowlink" href="{{ i.url }}" target="_blank" rel="noopener">open ↗</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty">No items tracked for {{ site.capitalize() }}.</p>
+{% endif %}
+{% endblock %}

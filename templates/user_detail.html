@@ -63,7 +63,7 @@
 {% if products %}
 <div class="tablewrap" style="margin-bottom:22px;">
   <table>
-    <thead><tr><th>Name</th><th>Store</th><th>Status</th><th>Last checked</th><th>Link</th></tr></thead>
+    <thead><tr><th>Name</th><th>Store</th><th>Status</th><th>Last checked</th><th>Link</th><th></th></tr></thead>
     <tbody>
       {% for p in products %}
       <tr>
@@ -72,6 +72,14 @@
         <td><span class="pill {{ 'ok' if p.in_stock else 'bad' }}">{{ p.status_label }}</span></td>
         <td>{{ p.last_checked or 'Never' }}</td>
         <td><a class="rowlink" href="{{ p.url }}" target="_blank" rel="noopener">open ↗</a></td>
+        <td>
+          <form class="inline" method="post"
+                action="{{ url_for('remove_user_product', uid=d.user_id, pid=p.id) }}"
+                onsubmit="return confirm('Remove this item from the user and notify them?');">
+            <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+            <button class="btn bad" type="submit">Remove</button>
+          </form>
+        </td>
       </tr>
       {% endfor %}
     </tbody>

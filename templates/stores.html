@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% set active = 'stores' %}
+{% block title %}Stores{% endblock %}
+{% block body %}
+<h1>Store breakdown ({{ total }} tracked item(s) total)</h1>
+{% if rows %}
+<div class="tablewrap">
+  <table>
+    <thead><tr><th>Store</th><th>Tracked items</th><th></th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>
+          <a class="rowlink" href="{{ url_for('store_detail', site=r.site) }}">{{ r.site.capitalize() }}</a>
+          {% if not r.supported %}<span class="pill warn" title="Not a currently-supported store">retired</span>{% endif %}
+        </td>
+        <td>{{ r.count }}</td>
+        <td>{% if r.count %}<a class="rowlink" href="{{ url_for('store_detail', site=r.site) }}">view items →</a>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty">No tracked items yet.</p>
+{% endif %}
+<p class="note">Counts span all users. “retired” marks a store no longer in the supported list that still has lingering tracked items.</p>
+{% endblock %}

@@ -38,7 +38,7 @@ from flask import (
     request, session, url_for,
 )
 
-from config import ADMIN_USER_ID, BOT_TOKEN
+from config import ADMIN_USER_ID, BOT_TOKEN, SUPPORTED_SITES
 from access import (
     compute_access,
     STATUS_TRIAL,
@@ -56,6 +56,8 @@ from database import (
     get_all_products,
     get_approvals_since,
     get_approval_history,
+    get_product_by_id_for_user,
+    remove_product,
     grant_access,
     reject_user,
     extend_access,
@@ -70,6 +72,7 @@ from notifications import (
     rejection_notice_text,
     block_notice_text,
     unblock_notice_text,
+    item_removed_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -497,6 +500,61 @@ def create_app() -> Flask:
         sent = sum(1 for i in recipients if _tg_send(i, f"📣 {text}"))
         flash(f"Broadcast sent to {sent}/{len(recipients)} recipient(s) ({scope}).", "ok")
         return redirect(url_for("broadcast"))
+
+    @app.route("/user/<int:uid>/product/<int:pid>/remove", methods=["POST"])
+    @login_required
+    def remove_user_product(uid, pid):
+        # Fetch first so we have the name for the notification, and to confirm
+        # the product actually belongs to this user before deleting.
+        product = get_product_by_id_for_user(pid, uid)
+        if product is None:
+            flash(f"Item #{pid} not found for user {uid}.", "bad")
+            return redirect(url_for("user_detail", uid=uid))
+        if remove_product(uid, pid):
+            _tg_send(uid, item_removed_text(product["name"]))
+            flash(f"Removed “{product['name']}” and notified the user.", "ok")
+        else:
+            flash(f"Could not remove item #{pid}.", "bad")
+        return redirect(url_for("user_detail", uid=uid))
+
+    # ── Store-wise breakdown ─────────────────────────────────────────────────
+    @app.route("/stores")
+    @login_required
+    def stores():
+        products = get_all_products()
+        counts = Counter(p["site"] for p in products)
+        # Union of officially-supported stores and any site actually present in
+        # the DB (e.g. Croma items linger after Croma was pulled from
+        # SUPPORTED_SITES), so nothing is hidden. Supported-but-empty stores
+        # still appear with a 0.
+        all_sites = sorted(set(SUPPORTED_SITES.keys()) | set(counts.keys()))
+        rows = [{
+            "site": s,
+            "count": counts.get(s, 0),
+            "supported": s in SUPPORTED_SITES,
+        } for s in all_sites]
+        rows.sort(key=lambda r: r["count"], reverse=True)
+        return render_template("stores.html", rows=rows, total=len(products))
+
+    @app.route("/stores/<site>")
+    @login_required
+    def store_detail(site):
+        # display-name map built once to avoid a query per product
+        name_by_id = {u["user_id"]: _display_name(u) for u in list_all_users()}
+        items = []
+        for p in get_all_products():
+            if p["site"] != site:
+                continue
+            items.append({
+                "id": p["id"],
+                "name": p["name"],
+                "url": p["url"],
+                "in_stock": bool(p["in_stock"]),
+                "user_id": p["user_id"],
+                "user_name": name_by_id.get(p["user_id"], str(p["user_id"])),
+            })
+        items.sort(key=lambda i: i["name"].lower())
+        return render_template("store_detail.html", site=site, items=items)
 
     return app
 
