@@ -2,54 +2,69 @@
 {% set active = 'users' %}
 {% block title %}Users{% endblock %}
 {% block body %}
-<h1>All users ({{ rows|length }})</h1>
+<h1>
+  {% if filter_label %}{{ filter_label }} — {{ rows|length }} user(s){% else %}All users ({{ rows|length }}){% endif %}
+</h1>
+{% if filter_label %}<p class="note" style="margin-top:0;"><a class="rowlink" href="{{ url_for('users') }}">← All users</a></p>{% endif %}
+
 <form class="search" method="get">
+  {% if filter %}<input type="hidden" name="filter" value="{{ filter }}">{% endif %}
   <input type="text" name="q" value="{{ q }}" placeholder="Search by ID, name, or username…">
   <button type="submit">Search</button>
 </form>
+
 {% if rows %}
-<div class="tablewrap">
-  <table>
-    <thead>
-      <tr><th>User ID</th><th>Name</th><th>Username</th><th>Status</th><th>Plan</th>
-          <th>Access</th><th>Items</th><th>Actions</th></tr>
-    </thead>
-    <tbody>
-      {% for r in rows %}
-      <tr>
-        <td>{{ r.user_id }}</td>
-        <td>{{ r.name }}</td>
-        <td>{{ r.username }}</td>
-        <td><span class="pill {{ r.status_class }}">{{ r.status }}</span></td>
-        <td>{{ r.plan }}</td>
-        <td>{{ r.days }}</td>
-        <td>{{ r.items }}</td>
-        <td>
-          <div class="actions">
-            {% if r.blocked %}
-              <form class="inline" method="post" action="{{ url_for('unblock_user', uid=r.user_id) }}">
-                <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-                <button class="btn" type="submit">Unblock</button>
-              </form>
-            {% else %}
-              <form class="inline" method="post" action="{{ url_for('block_user', uid=r.user_id) }}"
-                    onsubmit="return confirm('Block user {{ r.user_id }}?');">
-                <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-                <button class="btn bad" type="submit">Block</button>
-              </form>
-            {% endif %}
-            <form class="inline actions" method="post" action="{{ url_for('extend_user', uid=r.user_id) }}">
-              <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-              <input type="number" name="days" min="1" placeholder="days" required>
-              <button class="btn" type="submit">Extend</button>
-            </form>
-          </div>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
+<form method="post" action="{{ url_for('broadcast_compose') }}">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  <div style="margin-bottom:10px;">
+    <button class="btn primary" type="submit">📣 Message selected →</button>
+    <span class="note">Tick users, then send them a broadcast.</span>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th></th><th>User ID</th><th>User</th><th>Status</th><th>Plan</th>
+            <th>Access</th><th>Items</th><th>Actions</th></tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td><input type="checkbox" name="uids" value="{{ r.user_id }}"></td>
+          <td>{{ r.user_id }}</td>
+          <td><a class="rowlink" href="{{ url_for('user_detail', uid=r.user_id) }}">{{ r.name }}</a></td>
+          <td><span class="pill {{ r.status_class }}">{{ r.status }}</span></td>
+          <td>{{ r.plan }}</td>
+          <td>{{ r.days }}</td>
+          <td>{{ r.items }}</td>
+          <td>
+            <div class="actions">
+              {% if r.blocked %}
+                <button class="btn" type="submit" form="unblock-{{ r.user_id }}">Unblock</button>
+              {% else %}
+                <button class="btn bad" type="submit" form="block-{{ r.user_id }}">Block</button>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</form>
+
+{# Block/unblock forms kept OUTSIDE the broadcast form (no nested forms) and
+   referenced by button form=... so each row action posts independently. #}
+{% for r in rows %}
+  {% if r.blocked %}
+  <form id="unblock-{{ r.user_id }}" method="post" action="{{ url_for('unblock_user', uid=r.user_id) }}" style="display:none;">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  </form>
+  {% else %}
+  <form id="block-{{ r.user_id }}" method="post" action="{{ url_for('block_user', uid=r.user_id) }}" style="display:none;">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  </form>
+  {% endif %}
+{% endfor %}
 {% else %}
 <p class="empty">No users match{{ ' “' + q + '”' if q else '' }}.</p>
 {% endif %}

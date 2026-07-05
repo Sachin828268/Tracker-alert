@@ -98,9 +98,15 @@ def compute_access(user_row: dict, now: datetime | None = None) -> AccessInfo:
     return AccessInfo(STATUS_LOCKED, False, user_row, plan, delta_seconds / 86400, None)
 
 
-def get_access_info(user_id: int) -> AccessInfo:
-    """Fetch-or-create the user row and compute its current access status."""
-    user_row = get_or_create_user(user_id)
+def get_access_info(
+    user_id: int, username: str | None = None, first_name: str | None = None
+) -> AccessInfo:
+    """Fetch-or-create the user row and compute its current access status.
+    Optional username/first_name are forwarded to get_or_create_user so the
+    stored Telegram profile refreshes on every interaction (get_or_create_user
+    preserves existing values when these are None). This is what lets usernames
+    that were previously wiped to NULL recover the next time a user interacts."""
+    user_row = get_or_create_user(user_id, username=username, first_name=first_name)
     return compute_access(user_row)
 
 
@@ -256,7 +262,7 @@ class AccessControlMiddleware(BaseMiddleware):
             if event.data.startswith(_ALWAYS_ALLOWED_CALLBACK_PREFIXES):
                 return await handler(event, data)
 
-        info = get_access_info(user.id)
+        info = get_access_info(user.id, username=user.username, first_name=user.first_name)
         if info.has_access:
             return await handler(event, data)
 

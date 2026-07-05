@@ -27,6 +27,10 @@
     h1 { font-size:20px; margin:0 0 16px; }
     .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
     .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+    a.card { text-decoration:none; color:inherit; transition:border-color .12s; }
+    a.card:hover { border-color:var(--accent); }
+    a.rowlink { color:var(--accent); text-decoration:none; font-weight:600; }
+    a.rowlink:hover { text-decoration:underline; }
     .card .n { font-size:26px; font-weight:700; }
     .card .l { color:var(--muted); font-size:13px; margin-top:2px; }
     .tablewrap { overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:10px; }

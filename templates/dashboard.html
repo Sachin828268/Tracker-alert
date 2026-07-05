@@ -4,15 +4,16 @@
 {% block body %}
 <h1>Overview</h1>
 <div class="cards">
-  <div class="card"><div class="n">{{ stats.total_users }}</div><div class="l">Total users</div></div>
-  <div class="card"><div class="n">{{ stats.active }}</div><div class="l">Active (paid)</div></div>
-  <div class="card"><div class="n">{{ stats.trial }}</div><div class="l">In trial</div></div>
-  <div class="card"><div class="n">{{ stats.grace }}</div><div class="l">Expired (grace)</div></div>
-  <div class="card"><div class="n">{{ stats.locked }}</div><div class="l">Locked</div></div>
+  <a class="card" href="{{ url_for('users') }}"><div class="n">{{ stats.total_users }}</div><div class="l">Total users →</div></a>
+  <a class="card" href="{{ url_for('users', filter='active') }}"><div class="n">{{ stats.active }}</div><div class="l">Active (paid) →</div></a>
+  <a class="card" href="{{ url_for('users', filter='trial') }}"><div class="n">{{ stats.trial }}</div><div class="l">In trial →</div></a>
+  <a class="card" href="{{ url_for('users', filter='grace') }}"><div class="n">{{ stats.grace }}</div><div class="l">Expired (grace) →</div></a>
+  <a class="card" href="{{ url_for('users', filter='locked') }}"><div class="n">{{ stats.locked }}</div><div class="l">Locked →</div></a>
+  <a class="card" href="{{ url_for('users', filter='blocked') }}"><div class="n">{{ stats.blocked }}</div><div class="l">Blocked →</div></a>
   <div class="card"><div class="n">₹{{ '{:,.0f}'.format(stats.revenue) }}</div><div class="l">Revenue this month</div></div>
   <div class="card"><div class="n">{{ stats.total_products }}</div><div class="l">Tracked items</div></div>
   <div class="card"><div class="n">{{ stats.active_plans }}</div><div class="l">Active plans</div></div>
   <div class="card"><div class="n">{{ stats.top_store }}</div><div class="l">Top store</div></div>
 </div>
-<p class="note">Manage users on the Users &amp; Pending tabs, plans on Plans, and message everyone on Broadcast.</p>
+<p class="note">Click any user count to see that filtered list. Manage users on the Users &amp; Pending tabs, plans on Plans, and message users on Broadcast.</p>
 {% endblock %}

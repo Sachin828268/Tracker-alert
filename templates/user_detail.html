@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% set active = 'users' %}
+{% block title %}User {{ d.user_id }}{% endblock %}
+{% block body %}
+<p class="note" style="margin-top:0;"><a class="rowlink" href="{{ url_for('users') }}">← Users</a></p>
+<h1>{{ d.name }} <span class="pill {{ d.status_class }}">{{ d.status }}</span></h1>
+
+<div class="cards" style="margin-bottom:22px;">
+  <div class="card"><div class="l">User ID</div><div style="font-weight:600;">{{ d.user_id }}</div></div>
+  <div class="card"><div class="l">Username</div><div style="font-weight:600;">{{ d.username }}</div></div>
+  <div class="card"><div class="l">First name</div><div style="font-weight:600;">{{ d.first_name }}</div></div>
+  <div class="card"><div class="l">Plan</div><div style="font-weight:600;">{{ d.plan }}</div></div>
+  <div class="card"><div class="l">Access</div><div style="font-weight:600;">{{ d.days }}</div></div>
+  <div class="card"><div class="l">Access until</div><div style="font-weight:600;">{{ d.access_until }}</div></div>
+  <div class="card"><div class="l">Joined</div><div style="font-weight:600;">{{ d.joined }}</div></div>
+  <div class="card"><div class="l">Pin codes</div><div style="font-weight:600;">{{ d.pins|join(', ') if d.pins else '—' }}</div></div>
+</div>
+
+<h1>Actions</h1>
+<div class="card" style="margin-bottom:22px;">
+  <div class="actions" style="gap:14px;">
+    {% if d.blocked %}
+      <form class="inline" method="post" action="{{ url_for('unblock_user', uid=d.user_id) }}">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <button class="btn" type="submit">Unblock</button>
+      </form>
+    {% else %}
+      <form class="inline" method="post" action="{{ url_for('block_user', uid=d.user_id) }}"
+            onsubmit="return confirm('Block user {{ d.user_id }}?');">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <button class="btn bad" type="submit">Block</button>
+      </form>
+    {% endif %}
+
+    <form class="inline actions" method="post" action="{{ url_for('extend_user', uid=d.user_id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="number" name="days" min="1" placeholder="days" required>
+      <button class="btn" type="submit">Extend</button>
+    </form>
+
+    <form class="inline actions" method="post" action="{{ url_for('approve_user', uid=d.user_id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <select name="plan_id" required>
+        <option value="" disabled selected>Plan…</option>
+        {% for p in plans %}<option value="{{ p.id }}">{{ p.name }} (₹{{ '{:,.0f}'.format(p.price) }})</option>{% endfor %}
+      </select>
+      <input type="number" name="days" min="1" placeholder="days" required>
+      <button class="btn primary" type="submit">Approve</button>
+    </form>
+  </div>
+
+  <form method="post" action="{{ url_for('broadcast_send') }}" style="margin-top:14px;">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="uids" value="{{ d.user_id }}">
+    <div class="actions">
+      <input type="text" name="text" placeholder="Message this user…" style="flex:1;min-width:220px;" required>
+      <button class="btn" type="submit">Send DM</button>
+    </div>
+  </form>
+</div>
+
+<h1>Tracked products ({{ products|length }})</h1>
+{% if products %}
+<div class="tablewrap" style="margin-bottom:22px;">
+  <table>
+    <thead><tr><th>Name</th><th>Store</th><th>Status</th><th>Last checked</th><th>Link</th></tr></thead>
+    <tbody>
+      {% for p in products %}
+      <tr>
+        <td>{{ p.name }}</td>
+        <td>{{ p.site.capitalize() }}</td>
+        <td><span class="pill {{ 'ok' if p.in_stock else 'bad' }}">{{ p.status_label }}</span></td>
+        <td>{{ p.last_checked or 'Never' }}</td>
+        <td><a class="rowlink" href="{{ p.url }}" target="_blank" rel="noopener">open ↗</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty">No tracked products.</p>
+{% endif %}
+
+<h1>History ({{ history|length }})</h1>
+{% if history %}
+<div class="tablewrap">
+  <table>
+    <thead><tr><th>When</th><th>Action</th><th>Days</th><th>Amount</th><th>Reason</th></tr></thead>
+    <tbody>
+      {% for h in history %}
+      <tr>
+        <td>{{ h.created_at }}</td>
+        <td>{{ h.action }}</td>
+        <td>{{ h.days if h.days is not none else '—' }}</td>
+        <td>{{ '₹{:,.0f}'.format(h.amount) if h.amount else '—' }}</td>
+        <td>{{ h.reason or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty">No approval/action history.</p>
+{% endif %}
+<p class="note">Per-check history isn't stored — each product shows only its latest status and last-checked time.</p>
+{% endblock %}

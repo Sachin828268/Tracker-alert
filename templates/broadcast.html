@@ -4,18 +4,29 @@
 {% block body %}
 <h1>Broadcast</h1>
 <div class="card">
-  <p class="note" style="margin-top:0;">
-    Sends an HTML message to all <b>{{ active_count }}</b> user(s) with active access
-    (trial or paid). Prefixed with 📣 automatically, matching the bot's /broadcast.
-  </p>
+  {% if target_uids %}
+    <p class="note" style="margin-top:0;">
+      Sending to <b>{{ target_uids|length }}</b> selected user(s):
+      {{ targets|join(', ') }}.
+    </p>
+  {% else %}
+    <p class="note" style="margin-top:0;">
+      Sending to all <b>{{ active_count }}</b> user(s) with active access (trial or paid).
+      Prefixed with 📣 automatically, matching the bot's /broadcast.
+    </p>
+  {% endif %}
   <form method="post" action="{{ url_for('broadcast_send') }}"
-        onsubmit="return confirm('Send this message to all {{ active_count }} active user(s)?');">
+        onsubmit="return confirm('Send this message to {{ (target_uids|length ~ ' selected') if target_uids else (active_count ~ ' active') }} user(s)?');">
     <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    {% for uid in target_uids %}<input type="hidden" name="uids" value="{{ uid }}">{% endfor %}
     <textarea name="text" rows="5" placeholder="Your message… (HTML allowed: <b>, <i>, <a href>)"
               style="width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font:inherit;"
               required></textarea>
     <div style="margin-top:12px;">
-      <button class="btn primary" type="submit">Send to {{ active_count }} user(s)</button>
+      <button class="btn primary" type="submit">
+        Send to {{ target_uids|length if target_uids else active_count }} user(s)
+      </button>
+      {% if target_uids %}<a class="btn" href="{{ url_for('broadcast') }}">Switch to all-active</a>{% endif %}
     </div>
   </form>
 </div>

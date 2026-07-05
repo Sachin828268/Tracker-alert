@@ -52,8 +52,10 @@ from database import (
     get_user,
     list_plans,
     list_products,
+    list_pin_codes,
     get_all_products,
     get_approvals_since,
+    get_approval_history,
     grant_access,
     reject_user,
     extend_access,
@@ -99,7 +101,14 @@ def _fmt_days(days):
 
 
 def _display_name(u: dict) -> str:
-    return u.get("first_name") or (f"@{u['username']}" if u.get("username") else str(u["user_id"]))
+    # Identity precedence: @username → first name → bare ID. Point-1 fallback:
+    # users who never set a public Telegram username show their first name
+    # rather than just a numeric ID.
+    if u.get("username"):
+        return f"@{u['username']}"
+    if u.get("first_name"):
+        return u["first_name"]
+    return str(u["user_id"])
 
 
 def _tg_send(user_id: int, text: str) -> bool:
@@ -208,6 +217,7 @@ def create_app() -> Flask:
             "trial": counts.get(STATUS_TRIAL, 0),
             "grace": counts.get(STATUS_EXPIRED_GRACE, 0),
             "locked": counts.get(STATUS_LOCKED, 0),
+            "blocked": sum(1 for u in users if u.get("blocked")),
             "revenue": revenue,
             "total_products": len(all_products),
             "top_store": f"{top_store[0][0]} ({top_store[0][1]})" if top_store else "—",
@@ -215,13 +225,31 @@ def create_app() -> Flask:
         }
         return render_template("dashboard.html", stats=stats)
 
+    # Maps a ?filter= value to a predicate over (AccessInfo, user_row). Powers
+    # the clickable stats cards (point 3): each card links to /users?filter=X.
+    _USER_FILTERS = {
+        "active": lambda info, u: info.status == STATUS_ACTIVE,
+        "trial": lambda info, u: info.status == STATUS_TRIAL,
+        "grace": lambda info, u: info.status == STATUS_EXPIRED_GRACE,
+        "locked": lambda info, u: info.status == STATUS_LOCKED,
+        "blocked": lambda info, u: bool(u.get("blocked")),
+    }
+    _FILTER_LABEL = {
+        "active": "Active (paid)", "trial": "In trial", "grace": "Expired (grace)",
+        "locked": "Locked", "blocked": "Blocked",
+    }
+
     @app.route("/users")
     @login_required
     def users():
         q = (request.args.get("q") or "").strip().lower()
+        flt = request.args.get("filter") or ""
+        predicate = _USER_FILTERS.get(flt)
         rows = []
         for u in list_all_users():
             info = compute_access(u)
+            if predicate and not predicate(info, u):
+                continue
             name = _display_name(u)
             uname = f"@{u['username']}" if u.get("username") else "—"
             if q and q not in str(u["user_id"]) and q not in name.lower() and q not in uname.lower():
@@ -237,7 +265,40 @@ def create_app() -> Flask:
                 "blocked": bool(u.get("blocked")),
                 "items": len(list_products(u["user_id"])),
             })
-        return render_template("users.html", rows=rows, q=request.args.get("q") or "", plans=list_plans())
+        return render_template(
+            "users.html", rows=rows, q=request.args.get("q") or "", plans=list_plans(),
+            filter=flt, filter_label=_FILTER_LABEL.get(flt),
+        )
+
+    @app.route("/user/<int:uid>")
+    @login_required
+    def user_detail(uid):
+        u = get_user(uid)
+        if u is None:
+            flash(f"No user with id {uid}.", "bad")
+            return redirect(url_for("users"))
+        info = compute_access(u)
+        products = list_products(uid)
+        for p in products:
+            p["status_label"] = "In stock" if p["in_stock"] else "Out of stock"
+        detail = {
+            "user_id": uid,
+            "name": _display_name(u),
+            "username": f"@{u['username']}" if u.get("username") else "—",
+            "first_name": u.get("first_name") or "—",
+            "joined": u.get("created_at") or "—",
+            "plan": info.plan["name"] if info.plan else "—",
+            "status": STATUS_LABEL.get(info.status, info.status),
+            "status_class": STATUS_CLASS.get(info.status, ""),
+            "access_until": u.get("access_until") or "—",
+            "days": _fmt_days(info.days_remaining),
+            "blocked": bool(u.get("blocked")),
+            "pins": list_pin_codes(uid),
+        }
+        return render_template(
+            "user_detail.html", d=detail, products=products,
+            history=get_approval_history(uid), plans=list_plans(active_only=True),
+        )
 
     @app.route("/pending")
     @login_required
@@ -262,11 +323,35 @@ def create_app() -> Flask:
     def plans():
         return render_template("plans.html", plans=list_plans(), fields=_EDITABLE_PLAN_FIELDS)
 
+    def _valid_uids(raw_list) -> list[int]:
+        out = []
+        for v in raw_list:
+            try:
+                out.append(int(v))
+            except (TypeError, ValueError):
+                continue
+        return out
+
     @app.route("/broadcast")
     @login_required
     def broadcast():
         active = [u for u in list_all_users() if compute_access(u).has_access]
-        return render_template("broadcast.html", active_count=len(active))
+        return render_template("broadcast.html", active_count=len(active), target_uids=[], targets=None)
+
+    @app.route("/broadcast/compose", methods=["POST"])
+    @login_required
+    def broadcast_compose():
+        # Reached from the Users table's "Message selected" button — carries the
+        # checked user_ids into the compose form as the target set.
+        uids = _valid_uids(request.form.getlist("uids"))
+        if not uids:
+            flash("No users selected.", "bad")
+            return redirect(url_for("users"))
+        targets = [_display_name(u) for u in (get_user(i) for i in uids) if u]
+        active = [u for u in list_all_users() if compute_access(u).has_access]
+        return render_template(
+            "broadcast.html", active_count=len(active), target_uids=uids, targets=targets,
+        )
 
     # ── Write actions ────────────────────────────────────────────────────────
     def _require_user(uid: int) -> dict:
@@ -341,7 +426,7 @@ def create_app() -> Flask:
         updated = grant_access(uid, plan_id, days, ADMIN_USER_ID)
         _tg_send(uid, approval_notice_text(plan["name"], days, updated["access_until"]))
         flash(f"Approved user {uid} on {plan['name']} for {days} day(s).", "ok")
-        return redirect(url_for("pending"))
+        return redirect(request.referrer or url_for("pending"))
 
     @app.route("/pending/<int:uid>/reject", methods=["POST"])
     @login_required
@@ -354,7 +439,7 @@ def create_app() -> Flask:
             flash(f"Rejected user {uid}.", "ok")
         else:
             flash(f"Could not reject user {uid}.", "bad")
-        return redirect(url_for("pending"))
+        return redirect(request.referrer or url_for("pending"))
 
     @app.route("/plans/add", methods=["POST"])
     @login_required
@@ -398,10 +483,19 @@ def create_app() -> Flask:
         text = (request.form.get("text") or "").strip()
         if not text:
             flash("Message can't be empty.", "bad")
-            return redirect(url_for("broadcast"))
-        active = [u for u in list_all_users() if compute_access(u).has_access]
-        sent = sum(1 for u in active if _tg_send(u["user_id"], f"📣 {text}"))
-        flash(f"Broadcast sent to {sent}/{len(active)} active user(s).", "ok")
+            return redirect(request.referrer or url_for("broadcast"))
+        # If explicit target uids are supplied (selective broadcast from the
+        # Users table or a user's detail page), send only to those. Otherwise
+        # send to all users with active access.
+        uids = _valid_uids(request.form.getlist("uids"))
+        if uids:
+            recipients = [i for i in uids if get_user(i) is not None]
+            scope = f"{len(recipients)} selected user(s)"
+        else:
+            recipients = [u["user_id"] for u in list_all_users() if compute_access(u).has_access]
+            scope = f"{len(recipients)} active user(s)"
+        sent = sum(1 for i in recipients if _tg_send(i, f"📣 {text}"))
+        flash(f"Broadcast sent to {sent}/{len(recipients)} recipient(s) ({scope}).", "ok")
         return redirect(url_for("broadcast"))
 
     return app

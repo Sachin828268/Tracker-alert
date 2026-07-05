@@ -466,8 +466,16 @@ def get_or_create_user(
     on first sight (plan_id/access_until stay NULL) — no automatic trial.
     The only ways to gain access are the /freetrial WhatsApp-share flow
     (see activate_share_trial) or manual admin approval (see grant_access).
-    Keeps username/first_name current on every call since Telegram profiles
-    can change.
+    Refreshes username/first_name when a NON-None value is supplied and it
+    differs from what's stored. Critically, a None argument NEVER overwrites a
+    stored value: many callers (the access middleware via get_access_info,
+    check_can_add_item, etc.) invoke this with just a user_id and no profile
+    data — previously that wiped the username/first_name captured at /start to
+    NULL on the user's very next interaction, which is why most users showed
+    only their ID. Now those calls preserve the stored profile, and any call
+    that DOES supply fresh profile data (e.g. the middleware forwarding the
+    Telegram user) refreshes it — so previously-wiped users self-heal the next
+    time they interact.
     """
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
@@ -483,13 +491,16 @@ def get_or_create_user(
             conn.commit()
             row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
             logger.info(f"New user {user_id} created with no access — must use /freetrial or await admin approval")
-        elif username != row["username"] or first_name != row["first_name"]:
-            conn.execute(
-                "UPDATE users SET username = ?, first_name = ? WHERE user_id = ?",
-                (username, first_name, user_id),
-            )
-            conn.commit()
-            row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        else:
+            new_username = username if username is not None else row["username"]
+            new_first_name = first_name if first_name is not None else row["first_name"]
+            if new_username != row["username"] or new_first_name != row["first_name"]:
+                conn.execute(
+                    "UPDATE users SET username = ?, first_name = ? WHERE user_id = ?",
+                    (new_username, new_first_name, user_id),
+                )
+                conn.commit()
+                row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
     return dict(row)
 
 
