@@ -56,7 +56,7 @@ from database import (
     get_all_products,
     get_approvals_since,
     get_approval_history,
-    get_product_by_id_for_user,
+    get_product_by_id,
     remove_product,
     grant_access,
     reject_user,
@@ -72,7 +72,7 @@ from notifications import (
     rejection_notice_text,
     block_notice_text,
     unblock_notice_text,
-    item_removed_text,
+    items_removed_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -501,21 +501,145 @@ def create_app() -> Flask:
         flash(f"Broadcast sent to {sent}/{len(recipients)} recipient(s) ({scope}).", "ok")
         return redirect(url_for("broadcast"))
 
-    @app.route("/user/<int:uid>/product/<int:pid>/remove", methods=["POST"])
+    @app.route("/users/bulk-block", methods=["POST"])
     @login_required
-    def remove_user_product(uid, pid):
-        # Fetch first so we have the name for the notification, and to confirm
-        # the product actually belongs to this user before deleting.
-        product = get_product_by_id_for_user(pid, uid)
-        if product is None:
-            flash(f"Item #{pid} not found for user {uid}.", "bad")
+    def users_bulk_block():
+        uids = _valid_uids(request.form.getlist("uids"))
+        if not uids:
+            flash("No users selected.", "bad")
+            return redirect(url_for("users"))
+        done = 0
+        for uid in uids:
+            if get_user(uid) and set_blocked(uid, True, ADMIN_USER_ID):
+                _tg_send(uid, block_notice_text())
+                done += 1
+        flash(f"Blocked {done} user(s).", "ok")
+        return redirect(request.referrer or url_for("users"))
+
+    @app.route("/users/bulk-unblock", methods=["POST"])
+    @login_required
+    def users_bulk_unblock():
+        uids = _valid_uids(request.form.getlist("uids"))
+        if not uids:
+            flash("No users selected.", "bad")
+            return redirect(url_for("users"))
+        done = 0
+        for uid in uids:
+            if get_user(uid) and set_blocked(uid, False, ADMIN_USER_ID):
+                _tg_send(uid, unblock_notice_text())
+                done += 1
+        flash(f"Unblocked {done} user(s).", "ok")
+        return redirect(request.referrer or url_for("users"))
+
+    @app.route("/pending/bulk-approve", methods=["POST"])
+    @login_required
+    def pending_bulk_approve():
+        uids = _valid_uids(request.form.getlist("uids"))
+        if not uids:
+            flash("No users selected.", "bad")
+            return redirect(url_for("pending"))
+        try:
+            plan_id = int(request.form.get("plan_id", ""))
+            days = int(request.form.get("days", "").strip())
+            if days <= 0:
+                raise ValueError
+        except ValueError:
+            flash("Pick a plan and a positive number of days for the bulk approval.", "bad")
+            return redirect(url_for("pending"))
+        plan = get_plan_by_id(plan_id)
+        if plan is None:
+            flash("That plan no longer exists.", "bad")
+            return redirect(url_for("pending"))
+        done = 0
+        for uid in uids:
+            if get_user(uid) is None:
+                continue
+            updated = grant_access(uid, plan_id, days, ADMIN_USER_ID)
+            _tg_send(uid, approval_notice_text(plan["name"], days, updated["access_until"]))
+            done += 1
+        flash(f"Approved {done} user(s) on {plan['name']} for {days} day(s).", "ok")
+        return redirect(url_for("pending"))
+
+    @app.route("/pending/bulk-reject", methods=["POST"])
+    @login_required
+    def pending_bulk_reject():
+        uids = _valid_uids(request.form.getlist("uids"))
+        if not uids:
+            flash("No users selected.", "bad")
+            return redirect(url_for("pending"))
+        reason = (request.form.get("reason") or "").strip() or None
+        done = 0
+        for uid in uids:
+            if get_user(uid) and reject_user(uid, ADMIN_USER_ID, reason):
+                _tg_send(uid, rejection_notice_text(reason))
+                done += 1
+        flash(f"Rejected {done} user(s).", "ok")
+        return redirect(url_for("pending"))
+
+    def _bulk_remove(pids, notify: bool, custom_message: str,
+                     scope_uid: int | None = None, scope_site: str | None = None):
+        """
+        Remove the given product ids, grouped by owning user. scope_uid /
+        scope_site restrict what may be removed (defence against a crafted
+        request targeting products outside the page the button came from).
+        When notify is set, each affected user gets ONE message: the admin's
+        custom_message if provided (sent as-is), else the default items-removed
+        notice listing that user's removed items. Returns (removed_count,
+        notified_user_count).
+        """
+        by_user: dict[int, list[str]] = {}
+        for pid in pids:
+            prod = get_product_by_id(pid)
+            if prod is None:
+                continue
+            if scope_uid is not None and prod["user_id"] != scope_uid:
+                continue
+            if scope_site is not None and prod["site"] != scope_site:
+                continue
+            if remove_product(prod["user_id"], pid):
+                by_user.setdefault(prod["user_id"], []).append(prod["name"])
+        removed = sum(len(v) for v in by_user.values())
+        notified = 0
+        if notify:
+            msg = custom_message.strip() if custom_message and custom_message.strip() else None
+            for owner, names in by_user.items():
+                if _tg_send(owner, msg or items_removed_text(names)):
+                    notified += 1
+        return removed, notified
+
+    @app.route("/user/<int:uid>/products/remove", methods=["POST"])
+    @login_required
+    def remove_user_products(uid):
+        pids = _valid_uids(request.form.getlist("pids"))
+        if not pids:
+            flash("No items selected.", "bad")
             return redirect(url_for("user_detail", uid=uid))
-        if remove_product(uid, pid):
-            _tg_send(uid, item_removed_text(product["name"]))
-            flash(f"Removed “{product['name']}” and notified the user.", "ok")
+        notify = "notify" in request.form
+        removed, notified = _bulk_remove(
+            pids, notify, request.form.get("message", ""), scope_uid=uid)
+        if removed:
+            note = f" and notified the user" if notify and notified else ""
+            flash(f"Removed {removed} item(s){note}.", "ok")
         else:
-            flash(f"Could not remove item #{pid}.", "bad")
+            flash("Nothing was removed.", "bad")
         return redirect(url_for("user_detail", uid=uid))
+
+    @app.route("/stores/<site>/remove", methods=["POST"])
+    @login_required
+    def remove_store_products(site):
+        pids = _valid_uids(request.form.getlist("pids"))
+        if not pids:
+            flash("No items selected.", "bad")
+            return redirect(url_for("store_detail", site=site))
+        notify = "notify" in request.form
+        removed, notified = _bulk_remove(
+            pids, notify, request.form.get("message", ""), scope_site=site)
+        if removed:
+            note = f", notified {notified} user(s)" if notify else ""
+            flash(f"Removed {removed} item(s) from {site.capitalize()}{note}.", "ok")
+        else:
+            flash("Nothing was removed.", "bad")
+        return redirect(url_for("store_detail", site=site))
 
     # ── Store-wise breakdown ─────────────────────────────────────────────────
     @app.route("/stores")

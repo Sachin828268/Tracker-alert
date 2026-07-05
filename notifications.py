@@ -100,17 +100,25 @@ def rejection_notice_text(reason: str | None) -> str:
     )
 
 
-def item_removed_text(product_name: str) -> str:
-    # Sent when the admin removes a tracked item from the dashboard. The
-    # product name is user-supplied and this goes out as parse_mode=HTML, so
-    # it's escaped here to avoid breaking the message (or injecting markup) on
-    # names containing <, >, or &.
-    name = html.escape(product_name or "your item")
-    return (
-        f"🦉 Ullu removed: {name}\n\n"
-        "To keep the bot fast, accurate, and running smoothly for everyone, "
-        "some items get cleared. Re-add anytime with /add!"
-    )
+_ITEM_REMOVED_TAIL = (
+    "To keep the bot fast, accurate, and running smoothly for everyone, "
+    "some items get cleared. Re-add anytime with /add!"
+)
+
+
+def items_removed_text(product_names: list[str]) -> str:
+    # Default notice when the admin removes one or more tracked items from the
+    # dashboard. Product names are user-supplied and this goes out as
+    # parse_mode=HTML, so each is escaped to avoid breaking the message (or
+    # injecting markup) on names containing <, >, or &. A single item keeps the
+    # original one-line form; multiple items are bulleted.
+    names = [html.escape(n or "your item") for n in product_names] or ["your item"]
+    if len(names) == 1:
+        header = f"🦉 Ullu removed: {names[0]}"
+    else:
+        listed = "\n".join(f"• {n}" for n in names)
+        header = f"🦉 Ullu removed the following items:\n{listed}"
+    return f"{header}\n\n{_ITEM_REMOVED_TAIL}"
 
 
 def block_notice_text() -> str:

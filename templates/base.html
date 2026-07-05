@@ -89,5 +89,14 @@
     {% endif %}
     {% block body %}{% endblock %}
   </main>
+  <script>
+    // Select-all: toggles every checkbox of the given name WITHIN the same
+    // form, so pages with more than one selectable table don't cross-toggle.
+    function toggleAll(src, name){
+      const form = src.closest('form');
+      if(!form) return;
+      form.querySelectorAll('input[type=checkbox][name="'+name+'"]').forEach(function(cb){ cb.checked = src.checked; });
+    }
+  </script>
 </body>
 </html>

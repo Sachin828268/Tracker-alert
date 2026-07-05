@@ -61,30 +61,38 @@
 
 <h1>Tracked products ({{ products|length }})</h1>
 {% if products %}
-<div class="tablewrap" style="margin-bottom:22px;">
-  <table>
-    <thead><tr><th>Name</th><th>Store</th><th>Status</th><th>Last checked</th><th>Link</th><th></th></tr></thead>
-    <tbody>
-      {% for p in products %}
-      <tr>
-        <td>{{ p.name }}</td>
-        <td>{{ p.site.capitalize() }}</td>
-        <td><span class="pill {{ 'ok' if p.in_stock else 'bad' }}">{{ p.status_label }}</span></td>
-        <td>{{ p.last_checked or 'Never' }}</td>
-        <td><a class="rowlink" href="{{ p.url }}" target="_blank" rel="noopener">open ↗</a></td>
-        <td>
-          <form class="inline" method="post"
-                action="{{ url_for('remove_user_product', uid=d.user_id, pid=p.id) }}"
-                onsubmit="return confirm('Remove this item from the user and notify them?');">
-            <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-            <button class="btn bad" type="submit">Remove</button>
-          </form>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
+<form method="post" action="{{ url_for('remove_user_products', uid=d.user_id) }}"
+      onsubmit="return confirm('Remove the selected item(s) from this user?');">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  <div class="tablewrap" style="margin-bottom:12px;">
+    <table>
+      <thead><tr>
+        <th><input type="checkbox" onclick="toggleAll(this,'pids')" title="Select all"></th>
+        <th>Name</th><th>Store</th><th>Status</th><th>Last checked</th><th>Link</th>
+      </tr></thead>
+      <tbody>
+        {% for p in products %}
+        <tr>
+          <td><input type="checkbox" name="pids" value="{{ p.id }}"></td>
+          <td>{{ p.name }}</td>
+          <td>{{ p.site.capitalize() }}</td>
+          <td><span class="pill {{ 'ok' if p.in_stock else 'bad' }}">{{ p.status_label }}</span></td>
+          <td>{{ p.last_checked or 'Never' }}</td>
+          <td><a class="rowlink" href="{{ p.url }}" target="_blank" rel="noopener">open ↗</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card" style="margin-bottom:22px;">
+    <label style="display:block;margin-bottom:8px;">
+      <input type="checkbox" name="notify" checked> Notify user about this removal
+    </label>
+    <input type="text" name="message" placeholder="Custom message (optional — blank uses the default 🦉 Ullu removed notice)"
+           style="width:100%;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);margin-bottom:10px;">
+    <button class="btn bad" type="submit">Remove selected</button>
+  </div>
+</form>
 {% else %}
 <p class="empty">No tracked products.</p>
 {% endif %}
