@@ -29,6 +29,7 @@ from notifications import (
     send_data_purged_notice,
 )
 from stock_checker import check_stock
+from url_normalize import product_group_key
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,13 +51,107 @@ def _log_startup_checks():
 # Background stock checker
 # ---------------------------------------------------------------------------
 
+async def _apply_result_to_row(
+    bot: Bot, product: dict, now_in_stock: bool, current_price: float | None
+) -> None:
+    """
+    Apply one group's stock result to a single tracked-product row: persist the
+    status and, on an out-of-stock → in-stock transition, fire the alert
+    (respecting that row's OWN Amazon price gate). Extracted so the dedup
+    fan-out applies the EXACT same per-row logic the non-deduped loop used to,
+    once per user tracking the product — no user's alert/price-gate behaviour
+    changes.
+    """
+    was_in_stock = bool(product["in_stock"])
+    update_stock_status(product["id"], now_in_stock)
+    if now_in_stock and not was_in_stock:
+        if should_alert_for_price(product, current_price):
+            await send_stock_alert(bot, product, price=current_price)
+        else:
+            target_price = product.get("target_price")
+            logger.info(
+                f"[bot] price gate: #{product['id']} in stock "
+                f"@ ₹{current_price:,.0f} > target ₹{target_price:,.0f} — skipping alert"
+            )
+
+
+async def run_stock_check_cycle(bot: Bot) -> dict:
+    """
+    One stock-check pass with cross-user deduplication.
+
+    Groups every tracked product row (across ALL users) by
+    url_normalize.product_group_key — i.e. (site, canonical-product-id,
+    pincode). Each group is checked exactly ONCE via check_stock (using any one
+    of the equivalent URLs), then that single result fans out to every row in
+    the group so each user still gets their own status update + transition
+    alert. This collapses redundant Scrape.do requests when multiple users
+    track the same product (differently-formatted URLs for the same product
+    normalize to the same id, so they group together).
+
+    Safety: pincode is part of the group key, so pincode-sensitive stores
+    (Apple) never share a check across different pincodes; a URL whose id can't
+    be extracted confidently keys on its raw string, so distinct products never
+    merge. The per-row fan-out is the same logic the old per-row loop ran.
+
+    Extracted from stock_checker_loop so a single cycle is directly testable
+    (mirrors run_access_maintenance_cycle). Returns a small stats dict.
+    """
+    products = get_all_products()
+
+    # One pincode lookup per user per cycle (cached), not per product.
+    pincode_by_user: dict[int, str | None] = {}
+
+    def _pincode_for(user_id: int) -> str | None:
+        if user_id not in pincode_by_user:
+            pincode_by_user[user_id] = get_user_primary_pincode(user_id)
+        return pincode_by_user[user_id]
+
+    groups: dict[str, list[dict]] = {}
+    for product in products:
+        pincode = _pincode_for(product["user_id"])
+        product["_pincode"] = pincode
+        key = product_group_key(product["site"], product["url"], pincode)
+        groups.setdefault(key, []).append(product)
+
+    saved = len(products) - len(groups)
+    logger.info(
+        f"Checking {len(products)} product(s) in {len(groups)} deduplicated "
+        f"group(s) — {saved} redundant check(s) avoided this cycle."
+    )
+
+    sem = asyncio.Semaphore(10)
+
+    async def _check_group(rows: list[dict]) -> None:
+        async with sem:
+            rep = rows[0]  # representative — every row here is the same product
+            try:
+                now_in_stock, current_price = await check_stock(
+                    rep["url"], rep["site"], pincode=rep["_pincode"], caller="background"
+                )
+            except Exception as exc:
+                logger.error(
+                    f"Error checking group site={rep['site']!r} url={rep['url']!r} "
+                    f"({len(rows)} row(s)): {exc}"
+                )
+                return
+            for product in rows:
+                try:
+                    await _apply_result_to_row(bot, product, now_in_stock, current_price)
+                except Exception as exc:
+                    logger.error(f"Error applying result to product #{product['id']}: {exc}")
+
+    await asyncio.gather(*[_check_group(rows) for rows in groups.values()])
+    return {"products": len(products), "groups": len(groups), "saved": saved}
+
+
 async def stock_checker_loop(bot: Bot):
     """
     Runs on a fixed CHECK_INTERVAL period measured from the start of each cycle,
     so the interval is not stacked on top of the checking time — a full cycle
     (checking + wait) targets CHECK_INTERVAL total rather than checking + interval.
-    Checks all tracked products in parallel (max 10 concurrent Scrape.do calls,
-    matching the plan's concurrency limit).
+    Checks all tracked products with cross-user deduplication (see
+    run_stock_check_cycle), max 10 concurrent Scrape.do calls (matching the
+    plan's concurrency limit).
     Sends an alert when a product transitions from out-of-stock → in-stock.
     For Amazon items with a target_price, only alerts when price ≤ target.
     """
@@ -64,38 +159,7 @@ async def stock_checker_loop(bot: Bot):
     while True:
         cycle_start = time.monotonic()
         try:
-            products = get_all_products()
-            logger.info(f"Checking {len(products)} product(s) in parallel…")
-
-            sem = asyncio.Semaphore(10)
-
-            async def _check_one(product: dict):
-                async with sem:
-                    try:
-                        was_in_stock = bool(product["in_stock"])
-                        pincode = get_user_primary_pincode(product["user_id"])
-                        logger.info(
-                            f"[bot] product #{product['id']} site={product['site']!r} "
-                            f"user_id={product['user_id']} → pincode={pincode!r}"
-                        )
-                        now_in_stock, current_price = await check_stock(
-                            product["url"], product["site"], pincode=pincode, caller="background"
-                        )
-                        update_stock_status(product["id"], now_in_stock)
-                        if now_in_stock and not was_in_stock:
-                            if should_alert_for_price(product, current_price):
-                                await send_stock_alert(bot, product, price=current_price)
-                            else:
-                                target_price = product.get("target_price")
-                                logger.info(
-                                    f"[bot] price gate: #{product['id']} in stock "
-                                    f"@ ₹{current_price:,.0f} > target ₹{target_price:,.0f} — skipping alert"
-                                )
-                    except Exception as exc:
-                        logger.error(f"Error processing product #{product['id']}: {exc}")
-
-            await asyncio.gather(*[_check_one(p) for p in products])
-
+            await run_stock_check_cycle(bot)
         except Exception as exc:
             logger.error(f"Stock checker loop error: {exc}")
 
