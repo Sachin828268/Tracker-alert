@@ -26,6 +26,7 @@ from database import (
     get_or_create_user,
     get_plan_by_id,
     get_user_lang,
+    is_site_locked,
     list_products,
 )
 from translations import t
@@ -124,6 +125,10 @@ REASON_NO_ACCESS = "no_access"
 REASON_NO_PLAN = "no_plan"
 REASON_ITEM_LIMIT = "item_limit"
 REASON_SITE_NOT_ALLOWED = "site_not_allowed"
+#: admin locked this store — globally or for this specific user. Like
+#: site_not_allowed, it only rules out this one item (skip and keep going),
+#: not the whole batch.
+REASON_SITE_LOCKED = "site_locked"
 
 
 def check_can_add_item(user_id: int, site: str) -> tuple[bool, str | None, str | None]:
@@ -145,6 +150,11 @@ def check_can_add_item(user_id: int, site: str) -> tuple[bool, str | None, str |
     lang = info.user_row.get("lang") or "en"
     if not info.has_access:
         return False, REASON_NO_ACCESS, access_denied_text(info)
+
+    # Admin store lock (global or per-user) — checked before plan limits so a
+    # locked store is refused regardless of the user's plan or remaining slots.
+    if is_site_locked(site, user_id):
+        return False, REASON_SITE_LOCKED, t("store_locked", lang, site=site.capitalize())
 
     plan = info.plan
     if plan is None:

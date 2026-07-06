@@ -67,6 +67,10 @@ from database import (
     edit_plan,
     delete_plan,
     get_plan_by_id,
+    list_global_site_locks,
+    list_user_site_locks,
+    set_global_site_lock,
+    set_user_site_lock,
 )
 from notifications import (
     approval_notice_text,
@@ -91,7 +95,10 @@ STATUS_CLASS = {
     STATUS_LOCKED: "bad",
 }
 
-_EDITABLE_PLAN_FIELDS = ("name", "price", "max_items", "sites", "is_trial_plan", "is_active")
+_EDITABLE_PLAN_FIELDS = (
+    "name", "price", "max_items", "sites", "is_trial_plan", "is_active",
+    "default_duration_days",
+)
 
 
 def _fmt_days(days):
@@ -299,9 +306,17 @@ def create_app() -> Flask:
             "blocked": bool(u.get("blocked")),
             "pins": list_pin_codes(uid),
         }
+        user_locked = list_user_site_locks(uid)
+        global_locked = list_global_site_locks()
+        site_locks_rows = [{
+            "site": s,
+            "user_locked": s in user_locked,
+            "global_locked": s in global_locked,
+        } for s in sorted(SUPPORTED_SITES.keys())]
         return render_template(
             "user_detail.html", d=detail, products=products,
             history=get_approval_history(uid), plans=list_plans(active_only=True),
+            site_locks_rows=site_locks_rows,
         )
 
     @app.route("/pending")
@@ -325,7 +340,10 @@ def create_app() -> Flask:
     @app.route("/plans")
     @login_required
     def plans():
-        return render_template("plans.html", plans=list_plans(), fields=_EDITABLE_PLAN_FIELDS)
+        return render_template(
+            "plans.html", plans=list_plans(), fields=_EDITABLE_PLAN_FIELDS,
+            all_sites=sorted(SUPPORTED_SITES.keys()),
+        )
 
     def _valid_uids(raw_list) -> list[int]:
         out = []
@@ -449,16 +467,30 @@ def create_app() -> Flask:
     @login_required
     def plan_add():
         name = (request.form.get("name") or "").strip()
-        sites = (request.form.get("sites") or "all").strip() or "all"
+        # Sites: "All stores" checkbox wins; otherwise the checked store list.
+        # An empty selection with "all" unchecked is treated as "all" too
+        # (a plan that allows no stores would be useless).
+        if request.form.get("all_sites") or not request.form.getlist("sites"):
+            sites = "all"
+        else:
+            sites = ",".join(request.form.getlist("sites"))
+        is_trial_plan = bool(request.form.get("is_trial_plan"))
+        is_active = bool(request.form.get("is_active"))
         try:
             price = float(request.form.get("price", "").strip())
             max_items = int(request.form.get("max_items", "").strip())
-            if not name or price < 0 or max_items <= 0:
+            duration = int(request.form.get("default_duration_days", "").strip())
+            if not name or price < 0 or max_items <= 0 or duration <= 0:
                 raise ValueError
         except ValueError:
-            flash("Name, a non-negative price, and a positive max-items are required.", "bad")
+            flash("Name, a non-negative price, a positive max-items, and a positive duration are required.", "bad")
             return redirect(url_for("plans"))
-        ok, msg = add_plan(name, price, max_items, sites)
+        ok, msg = add_plan(
+            name, price, max_items, sites,
+            default_duration_days=duration,
+            is_trial_plan=is_trial_plan,
+            is_active=is_active,
+        )
         flash(msg, "ok" if ok else "bad")
         return redirect(url_for("plans"))
 
@@ -680,6 +712,55 @@ def create_app() -> Flask:
             })
         items.sort(key=lambda i: i["name"].lower())
         return render_template("store_detail.html", site=site, items=items)
+
+    # ── Site locks (global store restriction) ────────────────────────────────
+    @app.route("/site-locks")
+    @login_required
+    def site_locks():
+        locked = list_global_site_locks()
+        counts = Counter(p["site"] for p in get_all_products())
+        # Every supported store, plus any store already locked even if it's no
+        # longer in SUPPORTED_SITES, so a lock is never hidden/orphaned.
+        names = sorted(set(SUPPORTED_SITES.keys()) | locked)
+        rows = [{
+            "site": s,
+            "locked": s in locked,
+            "supported": s in SUPPORTED_SITES,
+            "tracked": counts.get(s, 0),
+        } for s in names]
+        return render_template("site_locks.html", rows=rows)
+
+    @app.route("/site-locks/toggle", methods=["POST"])
+    @login_required
+    def site_locks_toggle():
+        site = (request.form.get("site") or "").strip().lower()
+        if not site:
+            flash("No store specified.", "bad")
+            return redirect(url_for("site_locks"))
+        lock = request.form.get("action") == "lock"
+        set_global_site_lock(site, lock)
+        flash(
+            f"{site.capitalize()} is now {'locked for all users' if lock else 'unlocked'}.",
+            "ok",
+        )
+        return redirect(url_for("site_locks"))
+
+    @app.route("/user/<int:uid>/site-locks/toggle", methods=["POST"])
+    @login_required
+    def user_site_lock_toggle(uid):
+        if _require_user(uid) is None:
+            return redirect(url_for("users"))
+        site = (request.form.get("site") or "").strip().lower()
+        if not site:
+            flash("No store specified.", "bad")
+            return redirect(url_for("user_detail", uid=uid))
+        lock = request.form.get("action") == "lock"
+        set_user_site_lock(uid, site, lock)
+        flash(
+            f"{site.capitalize()} is now {'locked' if lock else 'unlocked'} for this user.",
+            "ok",
+        )
+        return redirect(url_for("user_detail", uid=uid))
 
     return app
 

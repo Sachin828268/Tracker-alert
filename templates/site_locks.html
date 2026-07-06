@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% set active = 'site_locks' %}
+{% block title %}Site locks{% endblock %}
+{% block body %}
+<h1>Site locks — global</h1>
+<p class="note" style="margin-top:0;">
+  Lock a store to disable it for <b>all users</b>: nobody can /add it, and
+  automatic in-stock alerts for existing tracked items are suppressed while
+  it's locked (items aren't deleted). This is the dashboard equivalent of the
+  code-level change once used to pull Croma/Zepto — no redeploy needed.
+  For a single user, use the per-user controls on their detail page.
+</p>
+<div class="tablewrap">
+  <table>
+    <thead>
+      <tr><th>Store</th><th>Supported</th><th>Tracked items</th><th>Status</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.site.capitalize() }}</td>
+        <td>{{ '✓' if r.supported else '— (retired)' }}</td>
+        <td>{{ r.tracked }}</td>
+        <td>
+          {% if r.locked %}<span class="pill bad">Locked</span>
+          {% else %}<span class="pill ok">Available</span>{% endif %}
+        </td>
+        <td>
+          <form class="inline" method="post" action="{{ url_for('site_locks_toggle') }}">
+            <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+            <input type="hidden" name="site" value="{{ r.site }}">
+            {% if r.locked %}
+              <input type="hidden" name="action" value="unlock">
+              <button class="btn" type="submit">Unlock</button>
+            {% else %}
+              <input type="hidden" name="action" value="lock">
+              <button class="btn bad" type="submit">Lock globally</button>
+            {% endif %}
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="note">
+  A globally-locked store overrides everything — it stays locked for a user
+  even if they have no per-user lock. Unlock it here to restore it for
+  everyone (per-user locks, if any, still apply).
+</p>
+{% endblock %}

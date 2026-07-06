@@ -94,6 +94,16 @@ def init_db():
                 created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
             )
         """)
+        # Migration: add default_duration_days so a plan carries its own
+        # billing period. This pre-fills the "days" field on /approve and the
+        # dashboard approve/extend forms, so the admin no longer has to
+        # remember and retype each plan's duration every time. Defaults to 30
+        # for every existing plan; the seed below sets it explicitly for new DBs.
+        try:
+            conn.execute("ALTER TABLE plans ADD COLUMN default_duration_days INTEGER NOT NULL DEFAULT 30")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
         # Seed default plan once; idempotent (INSERT OR IGNORE on UNIQUE name).
         # is_trial_plan=1 makes this the plan whose limits apply during the
         # free trial by default — admin can move that flag to a different
@@ -102,8 +112,8 @@ def init_db():
         if not existing_plan:
             conn.execute(
                 """
-                INSERT INTO plans (name, price, max_items, sites, is_trial_plan, created_at)
-                VALUES ('Standard', 999, 20, 'all', 1, ?)
+                INSERT INTO plans (name, price, max_items, sites, is_trial_plan, default_duration_days, created_at)
+                VALUES ('Standard', 999, 20, 'all', 1, 30, ?)
                 """,
                 (now_ist_str(),),
             )
@@ -166,6 +176,33 @@ def init_db():
         """)
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_approvals_user_id ON approvals(user_id)
+        """)
+
+        # ── Site locks (admin store/feature restriction) ─────────────────────
+        # A lock disables a store either globally or for one specific user.
+        #   user_id IS NULL  → global lock: nobody may /add that store, and
+        #                      automatic alerts for it are suppressed for all.
+        #   user_id = <id>   → per-user lock: only that user is blocked from it.
+        # This is the dashboard-configurable equivalent of the code-level
+        # UNRELIABLE_SITES / SUPPORTED_SITES edits used to pull Croma/Zepto —
+        # no redeploy needed. Two partial unique indexes keep it idempotent:
+        # SQLite treats NULLs as distinct, so a plain UNIQUE(user_id, site)
+        # wouldn't stop duplicate global rows — hence the split indexes.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS site_locks (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER,
+                site       TEXT    NOT NULL,
+                created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_site_locks_global
+            ON site_locks(site) WHERE user_id IS NULL
+        """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_site_locks_user
+            ON site_locks(user_id, site) WHERE user_id IS NOT NULL
         """)
         conn.commit()
 
@@ -375,15 +412,39 @@ def get_user_primary_pincode(user_id: int) -> str | None:
 # Plans
 # ---------------------------------------------------------------------------
 
-_EDITABLE_PLAN_FIELDS = {"name", "price", "max_items", "sites", "is_trial_plan", "is_active"}
+_EDITABLE_PLAN_FIELDS = {
+    "name", "price", "max_items", "sites", "is_trial_plan", "is_active",
+    "default_duration_days",
+}
 
 
-def add_plan(name: str, price: float, max_items: int, sites: str) -> tuple[bool, str]:
+def add_plan(
+    name: str,
+    price: float,
+    max_items: int,
+    sites: str,
+    default_duration_days: int = 30,
+    is_trial_plan: bool = False,
+    is_active: bool = True,
+) -> tuple[bool, str]:
+    """
+    Create a plan with all configurable attributes. is_trial_plan is exclusive
+    (only one plan may be the trial plan at a time), so setting it here clears
+    the flag on every other plan first — mirroring edit_plan's behaviour.
+    """
     try:
         with get_connection() as conn:
+            if is_trial_plan:
+                conn.execute("UPDATE plans SET is_trial_plan = 0")
             conn.execute(
-                "INSERT INTO plans (name, price, max_items, sites, created_at) VALUES (?, ?, ?, ?, ?)",
-                (name, price, max_items, sites, now_ist_str()),
+                """
+                INSERT INTO plans
+                    (name, price, max_items, sites, is_trial_plan, is_active,
+                     default_duration_days, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (name, price, max_items, sites, 1 if is_trial_plan else 0,
+                 1 if is_active else 0, default_duration_days, now_ist_str()),
             )
             conn.commit()
         return True, "Plan created."
@@ -461,6 +522,74 @@ def delete_plan(plan_id: int) -> tuple[bool, str]:
     if cursor.rowcount == 0:
         return False, f"No plan with id {plan_id}."
     return True, "Plan deleted."
+
+
+# ---------------------------------------------------------------------------
+# Site locks (admin store restriction — global or per-user)
+# ---------------------------------------------------------------------------
+
+def is_site_locked(site: str, user_id: int | None = None) -> bool:
+    """
+    True if `site` is locked. A global lock (user_id IS NULL row) blocks
+    everyone; when a user_id is supplied, a per-user lock for that user also
+    counts. Site names are matched case-insensitively (stored lowercase).
+    """
+    site = site.lower()
+    with get_connection() as conn:
+        if conn.execute(
+            "SELECT 1 FROM site_locks WHERE user_id IS NULL AND site = ?", (site,)
+        ).fetchone():
+            return True
+        if user_id is not None and conn.execute(
+            "SELECT 1 FROM site_locks WHERE user_id = ? AND site = ?", (user_id, site)
+        ).fetchone():
+            return True
+    return False
+
+
+def set_global_site_lock(site: str, locked: bool) -> None:
+    """Lock or unlock a store for ALL users. Idempotent."""
+    site = site.lower()
+    with get_connection() as conn:
+        if locked:
+            conn.execute(
+                "INSERT OR IGNORE INTO site_locks (user_id, site, created_at) VALUES (NULL, ?, ?)",
+                (site, now_ist_str()),
+            )
+        else:
+            conn.execute("DELETE FROM site_locks WHERE user_id IS NULL AND site = ?", (site,))
+        conn.commit()
+
+
+def set_user_site_lock(user_id: int, site: str, locked: bool) -> None:
+    """Lock or unlock a store for ONE specific user. Idempotent."""
+    site = site.lower()
+    with get_connection() as conn:
+        if locked:
+            conn.execute(
+                "INSERT OR IGNORE INTO site_locks (user_id, site, created_at) VALUES (?, ?, ?)",
+                (user_id, site, now_ist_str()),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM site_locks WHERE user_id = ? AND site = ?", (user_id, site))
+        conn.commit()
+
+
+def list_global_site_locks() -> set[str]:
+    """The set of globally-locked store names."""
+    with get_connection() as conn:
+        rows = conn.execute("SELECT site FROM site_locks WHERE user_id IS NULL").fetchall()
+    return {r["site"] for r in rows}
+
+
+def list_user_site_locks(user_id: int) -> set[str]:
+    """The set of store names locked specifically for this user."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT site FROM site_locks WHERE user_id = ?", (user_id,)
+        ).fetchall()
+    return {r["site"] for r in rows}
 
 
 # ---------------------------------------------------------------------------
@@ -552,8 +681,21 @@ def list_all_users() -> list[dict]:
 
 
 def set_user_plan(user_id: int, plan_id: int) -> bool:
+    """
+    Assign a user to a plan (admin /setuserplan). ALSO clears is_trial=0:
+    putting someone on a formal plan is an explicit admin action that ends
+    any trial framing, so trial and paid-plan can never run concurrently.
+    Without this, a user reassigned mid-trial kept is_trial=1 while carrying
+    a paid plan_id, and compute_access — which keys status purely off is_trial —
+    still reported them as "trial" while enforcing the paid plan's limits. A
+    user is either on a trial (is_trial=1) or on a plan (is_trial=0), never
+    both. access_until is deliberately left untouched: this only reassigns the
+    plan, it doesn't grant or extend time (that's /approve and /extend's job).
+    """
     with get_connection() as conn:
-        cursor = conn.execute("UPDATE users SET plan_id = ? WHERE user_id = ?", (plan_id, user_id))
+        cursor = conn.execute(
+            "UPDATE users SET plan_id = ?, is_trial = 0 WHERE user_id = ?", (plan_id, user_id)
+        )
         conn.commit()
     return cursor.rowcount > 0
 

@@ -7,8 +7,8 @@
 <div class="tablewrap">
   <table>
     <thead>
-      <tr><th>ID</th><th>Name</th><th>Price</th><th>Max items</th><th>Sites</th>
-          <th>Trial</th><th>Active</th><th>Edit field</th><th></th></tr>
+      <tr><th>ID</th><th>Name</th><th>Price</th><th>Max items</th><th>Duration</th>
+          <th>Sites</th><th>Trial</th><th>Active</th><th>Edit field</th><th></th></tr>
     </thead>
     <tbody>
       {% for p in plans %}
@@ -17,6 +17,7 @@
         <td>{{ p.name }}</td>
         <td>₹{{ '{:,.0f}'.format(p.price) }}</td>
         <td>{{ p.max_items }}</td>
+        <td>{{ p.default_duration_days }}d</td>
         <td>{{ p.sites }}</td>
         <td>{{ '✓' if p.is_trial_plan else '—' }}</td>
         <td>{{ '✓' if p.is_active else '—' }}</td>
@@ -46,16 +47,47 @@
 <p class="empty">No plans defined.</p>
 {% endif %}
 
-<h1 style="margin-top:28px;">Add a plan</h1>
+<h1 style="margin-top:28px;">Create a plan</h1>
 <div class="card">
-  <form class="actions" method="post" action="{{ url_for('plan_add') }}">
+  <form method="post" action="{{ url_for('plan_add') }}">
     <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-    <input type="text" name="name" placeholder="Name" required>
-    <input type="number" name="price" step="0.01" min="0" placeholder="Price (₹)" required>
-    <input type="number" name="max_items" min="1" placeholder="Max items" required>
-    <input type="text" name="sites" placeholder="Sites (default: all)">
-    <button class="btn primary" type="submit">Add plan</button>
+
+    <div class="actions" style="gap:14px;margin-bottom:14px;">
+      <label>Name<br><input type="text" name="name" placeholder="e.g. Premium" required></label>
+      <label>Price (₹)<br><input type="number" name="price" step="0.01" min="0" placeholder="999" required></label>
+      <label>Max items<br><input type="number" name="max_items" min="1" placeholder="20" required></label>
+      <label>Duration (days)<br><input type="number" name="default_duration_days" min="1" value="30" required></label>
+    </div>
+
+    <div style="margin-bottom:12px;">
+      <div class="l" style="margin-bottom:6px;">Allowed stores</div>
+      <label style="display:inline-block;margin-right:14px;">
+        <input type="checkbox" name="all_sites" id="all_sites" checked
+               onchange="document.querySelectorAll('.site-cb').forEach(function(cb){cb.disabled=this.checked;}.bind(this));">
+        <b>All stores</b>
+      </label>
+      <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:10px 16px;">
+        {% for s in all_sites %}
+        <label><input type="checkbox" class="site-cb" name="sites" value="{{ s }}" disabled> {{ s.capitalize() }}</label>
+        {% endfor %}
+      </div>
+      <p class="note" style="margin-top:6px;">
+        Untick “All stores” to restrict this plan to only the stores you select.
+      </p>
+    </div>
+
+    <div class="actions" style="gap:18px;margin-bottom:14px;">
+      <label><input type="checkbox" name="is_trial_plan"> Use as the free-trial plan
+        <span class="note">(only one plan can be — this replaces the current one)</span></label>
+      <label><input type="checkbox" name="is_active" checked> Active</label>
+    </div>
+
+    <button class="btn primary" type="submit">Create plan</button>
   </form>
-  <p class="note">Sites: <code>all</code>, or a comma-separated list (e.g. <code>amazon,flipkart</code>).</p>
 </div>
+<p class="note">
+  Duration pre-fills the “days” field when you approve or extend a user on this
+  plan (you can still override it per approval). Trial/Active and per-store
+  restrictions can also be changed later via the “Edit field” dropdown above.
+</p>
 {% endblock %}

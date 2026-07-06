@@ -40,13 +40,56 @@
 
     <form class="inline actions" method="post" action="{{ url_for('approve_user', uid=d.user_id) }}">
       <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-      <select name="plan_id" required>
+      <select name="plan_id" required onchange="prefillDays(this)">
         <option value="" disabled selected>Plan…</option>
-        {% for p in plans %}<option value="{{ p.id }}">{{ p.name }} (₹{{ '{:,.0f}'.format(p.price) }})</option>{% endfor %}
+        {% for p in plans %}<option value="{{ p.id }}" data-days="{{ p.default_duration_days }}">{{ p.name }} (₹{{ '{:,.0f}'.format(p.price) }})</option>{% endfor %}
       </select>
       <input type="number" name="days" min="1" placeholder="days" required>
       <button class="btn primary" type="submit">Approve</button>
     </form>
+  </div>
+
+  <h1>Store access</h1>
+  <div class="card" style="margin-bottom:22px;">
+    <p class="note" style="margin-top:0;">
+      Lock a store for <b>this user only</b>. A globally-locked store (see
+      <a class="rowlink" href="{{ url_for('site_locks') }}">Site locks</a>) stays
+      locked for everyone regardless of the per-user setting below.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Store</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          {% for s in site_locks_rows %}
+          <tr>
+            <td>{{ s.site.capitalize() }}</td>
+            <td>
+              {% if s.global_locked %}<span class="pill bad">Locked (global)</span>
+              {% elif s.user_locked %}<span class="pill bad">Locked (this user)</span>
+              {% else %}<span class="pill ok">Available</span>{% endif %}
+            </td>
+            <td>
+              {% if s.global_locked %}
+                <span class="note">Managed globally</span>
+              {% else %}
+              <form class="inline" method="post" action="{{ url_for('user_site_lock_toggle', uid=d.user_id) }}">
+                <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                <input type="hidden" name="site" value="{{ s.site }}">
+                {% if s.user_locked %}
+                  <input type="hidden" name="action" value="unlock">
+                  <button class="btn" type="submit">Unlock</button>
+                {% else %}
+                  <input type="hidden" name="action" value="lock">
+                  <button class="btn bad" type="submit">Lock</button>
+                {% endif %}
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
 
   <form method="post" action="{{ url_for('broadcast_send') }}" style="margin-top:14px;">
@@ -119,4 +162,16 @@
 <p class="empty">No approval/action history.</p>
 {% endif %}
 <p class="note">Per-check history isn't stored — each product shows only its latest status and last-checked time.</p>
+<script>
+  // Pre-fill the "days" field from the selected plan's default duration, but
+  // only if the admin hasn't already typed a value — never clobber a manual edit.
+  function prefillDays(sel){
+    var opt = sel.options[sel.selectedIndex];
+    var days = opt && opt.getAttribute('data-days');
+    if(!days) return;
+    var form = sel.closest('form');
+    var input = form && form.querySelector('input[name="days"]');
+    if(input && !input.value) input.value = days;
+  }
+</script>
 {% endblock %}

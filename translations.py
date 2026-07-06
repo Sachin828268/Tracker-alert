@@ -209,6 +209,17 @@ _T: dict[str, dict[str, str]] = {
                      "Aapka <b>{plan}</b> plan sirf ye allow karta hai: <b>{sites}</b>.\n\n"
                      "Is store wale plan ke liye admin se upgrade karwao."),
     },
+    "store_locked": {
+        "en": ("🔒 <b>{site} tracking is currently unavailable.</b>\n\n"
+               "This store has been temporarily disabled. Please try another "
+               "store, or check back later."),
+        "hi": ("🔒 <b>{site} tracking अभी उपलब्ध नहीं है।</b>\n\n"
+               "ये store फ़िलहाल disable किया गया है। कृपया कोई और store आज़माएं, "
+               "या बाद में दोबारा देखें।"),
+        "hinglish": ("🔒 <b>{site} tracking abhi available nahi hai.</b>\n\n"
+                     "Ye store filhaal disable kiya gaya hai. Koi aur store try karo, "
+                     "ya baad me dobara check karo."),
+    },
 
     # ── Notifications ────────────────────────────────────────────────────────
     "stock_alert": {

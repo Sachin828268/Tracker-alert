@@ -18,7 +18,7 @@ import logging
 from aiogram import Bot
 
 from config import UNRELIABLE_SITES
-from database import get_user_lang
+from database import get_user_lang, is_site_locked
 from translations import t
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,15 @@ async def send_stock_alert(bot: Bot, product: dict, price: float | None = None):
             f"skipping automatic stock alert for product #{product['id']} to avoid "
             f"a possible false notification. Remove from config.UNRELIABLE_SITES "
             f"once the root cause is fixed."
+        )
+        return
+    # Admin store lock (global or per-user): existing tracked items keep being
+    # checked, but their alerts are suppressed while the store is locked —
+    # mirroring the UNRELIABLE_SITES gate rather than deleting anything.
+    if is_site_locked(product["site"], product["user_id"]):
+        logger.info(
+            f"[alert-suppressed] site={product['site']!r} is locked (global or for "
+            f"user {product['user_id']}) — skipping stock alert for product #{product['id']}."
         )
         return
     lang = get_user_lang(product["user_id"])

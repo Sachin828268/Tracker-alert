@@ -9,9 +9,9 @@
   <div class="card" style="margin-bottom:12px;">
     <div class="actions" style="gap:14px;">
       <span style="font-weight:600;">Bulk action on selected:</span>
-      <select name="plan_id">
+      <select name="plan_id" onchange="prefillDays(this)">
         <option value="" disabled selected>Plan…</option>
-        {% for p in plans %}<option value="{{ p.id }}">{{ p.name }} (₹{{ '{:,.0f}'.format(p.price) }})</option>{% endfor %}
+        {% for p in plans %}<option value="{{ p.id }}" data-days="{{ p.default_duration_days }}">{{ p.name }} (₹{{ '{:,.0f}'.format(p.price) }})</option>{% endfor %}
       </select>
       <input type="number" name="days" min="1" placeholder="days">
       <button class="btn primary" type="submit" formaction="{{ url_for('pending_bulk_approve') }}">Approve selected</button>
@@ -42,7 +42,17 @@
     </table>
   </div>
 </form>
-<p class="note">The plan + days apply to Approve; the reason applies to Reject. Click a name for per-user actions.</p>
+<p class="note">The plan + days apply to Approve; the reason applies to Reject. Click a name for per-user actions. Picking a plan pre-fills its default duration.</p>
+<script>
+  function prefillDays(sel){
+    var opt = sel.options[sel.selectedIndex];
+    var days = opt && opt.getAttribute('data-days');
+    if(!days) return;
+    var form = sel.closest('form');
+    var input = form && form.querySelector('input[name="days"]');
+    if(input && !input.value) input.value = days;
+  }
+</script>
 {% else %}
 <p class="empty">No users in trial or awaiting approval.</p>
 {% endif %}
