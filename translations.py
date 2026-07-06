@@ -397,13 +397,16 @@ _T: dict[str, dict[str, str]] = {
     "ft_request_pending": {
         "en": ("✅ <b>Thanks for sharing!</b>\n\n"
                "Your free trial request is pending admin approval. "
-               "You'll be notified once approved."),
+               "You'll be notified once approved.\n\n"
+               "🦉 Join https://t.me/UlluAlert for updates!"),
         "hi": ("✅ <b>Share करने के लिए धन्यवाद!</b>\n\n"
                "आपका free trial request admin approval के लिए pending है। "
-               "Approve होते ही आपको बता दिया जाएगा।"),
-        "hinglish": ("✅ <b>Share karne ke liye thanks!</b>\n\n"
+               "Approve होते ही आपको बता दिया जाएगा।\n\n"
+               "🦉 Updates के लिए join करें: https://t.me/UlluAlert"),
+        "hinglish": ("✅ <b>Share karne ke liye dhanyavaad!</b>\n\n"
                      "Aapka free trial request admin approval ke liye pending hai. "
-                     "Approve hote hi aapko bata diya jayega."),
+                     "Approve hote hi aapko bata diya jayega.\n\n"
+                     "🦉 Updates ke liye join karo: https://t.me/UlluAlert"),
     },
     "ft_wa_share_text": {
         "en": ("🚨 PS5 restock? New iPhone drop? Don't miss it again!\n\n"
