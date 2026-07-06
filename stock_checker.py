@@ -112,9 +112,33 @@ async def _fetch_html(scraper_url: str, site: str) -> str:
 # text both survive the non-rendered fetch. Cuts Flipkart from 5 credits to
 # 1 credit per Scrape.do request. If Flipkart's markup changes and this
 # stops holding, re-add "flipkart" here.
+#
+# Reliance Digital and JioMart also excluded (credit-cost pass, no direct
+# render=true-vs-false A/B test possible this time — no live network access
+# was available to run one; this is architectural inference, NOT the same
+# empirical proof Flipkart got). Both checkers' primary signal is JSON-LD
+# `offers.availability`, and both sites are large, SEO-invested retail
+# catalogs whose product-schema markup is almost always injected server-side
+# regardless of client-side rendering (crawlers need it without executing
+# JS) — the same property that held for Flipkart. If real /check results
+# show this doesn't hold (JSON-LD/OOS text missing without JS), re-add the
+# site here.
+#
+# Instamart, TataNeu, and Blinkit deliberately KEPT here despite the same
+# cost incentive — each has a specific reason to distrust a render=false
+# fetch: Instamart and Blinkit are quick-commerce apps already documented
+# above (_PINCODE_COMPLEX_SITES) as needing a JS-driven session/cookie flow
+# just to resolve location, suggesting the base page itself may only
+# hydrate its content (JSON-LD, buttons) via JS — a false fetch would
+# silently and permanently default every product to OOS (no signals found).
+# TataNeu is worse: its ONLY signal is the ABSENCE of a negative text phrase
+# (see checkers/tataneu.py), so a JS-dependent page that's simply empty
+# without rendering would resolve every product to IN STOCK — a systematic
+# false-positive-alert risk, not just a missed one. Not touching any of
+# these three without an explicit real-URL test first.
 _JS_SITES = {
     "zepto", "bigbasket", "blinkit", "croma", "instamart", "myntra",
-    "jiomart", "reliancedigital", "oneplus", "tataneu",
+    "oneplus", "tataneu",
 }
 
 # No sites currently support pincode-specific stock via simple cookie injection.

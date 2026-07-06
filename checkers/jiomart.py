@@ -4,7 +4,14 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-NEEDS_JS = True
+# Documentation-only (not read by any code — see stock_checker._JS_SITES for
+# the actual render=true/false switch). Set to False as of the credit-cost
+# pass: JSON-LD availability is this checker's primary signal and is
+# expected to survive a non-rendered fetch on an SEO-invested retail catalog
+# (see stock_checker.py's _JS_SITES comment for the full reasoning). Flip
+# back to True if real /check results show JSON-LD/OOS text going missing
+# without JS rendering.
+NEEDS_JS = False
 
 _ADD_PATTERNS = ["add to cart", "add to bag", "buy now"]
 _OOS_PATTERNS = [
