@@ -4,7 +4,21 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-NEEDS_JS = True
+# Documentation-only (not read by any code — see stock_checker._JS_SITES for
+# the actual render=true/false switch). Set to False as an EXPERIMENT
+# (credit-cost pass): Blinkit's own documented behavior (see
+# stock_checker.py's _PINCODE_COMPLEX_SITES comment) is to fall back to a
+# DEFAULT LOCALITY's catalog — not a blank/gated page — when location
+# cookies are missing, which is plausibly resolved server-side and is a real
+# (if unproven) reason to suspect the base JSON-LD/OOS-text/button signals
+# below might survive a non-rendered fetch too. Unproven: no live network
+# access was available to directly verify this, and Blinkit's documented
+# Cloudflare bot-management cookie requirement (__cf_bm/_cfuvid) remains an
+# open risk. If real /check results show this stuck permanently OOS on a
+# confirmed in-stock product, flip this back to True and re-add "blinkit" to
+# stock_checker._JS_SITES — that revert is deliberately isolated to its own
+# commit, separate from any other store's render-flag change.
+NEEDS_JS = False
 
 _ADD_PATTERNS = ["add to cart", "add to bag", "add item"]
 _OOS_PATTERNS = ["out of stock", "sold out", "currently unavailable", "notify me when available"]

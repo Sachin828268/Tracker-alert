@@ -124,20 +124,36 @@ async def _fetch_html(scraper_url: str, site: str) -> str:
 # show this doesn't hold (JSON-LD/OOS text missing without JS), re-add the
 # site here.
 #
-# Instamart, TataNeu, and Blinkit deliberately KEPT here despite the same
-# cost incentive — each has a specific reason to distrust a render=false
-# fetch: Instamart and Blinkit are quick-commerce apps already documented
-# above (_PINCODE_COMPLEX_SITES) as needing a JS-driven session/cookie flow
-# just to resolve location, suggesting the base page itself may only
-# hydrate its content (JSON-LD, buttons) via JS — a false fetch would
-# silently and permanently default every product to OOS (no signals found).
-# TataNeu is worse: its ONLY signal is the ABSENCE of a negative text phrase
-# (see checkers/tataneu.py), so a JS-dependent page that's simply empty
-# without rendering would resolve every product to IN STOCK — a systematic
-# false-positive-alert risk, not just a missed one. Not touching any of
-# these three without an explicit real-URL test first.
+# Instamart and TataNeu deliberately KEPT here despite the same cost
+# incentive — each has a specific reason to distrust a render=false fetch:
+# Instamart is a quick-commerce app already documented above
+# (_PINCODE_COMPLEX_SITES) as needing a JS-driven session/cookie flow just to
+# resolve location, suggesting the base page itself may only hydrate its
+# content (JSON-LD, buttons) via JS — a false fetch would silently and
+# permanently default every product to OOS (no signals found). TataNeu is
+# worse: its ONLY signal is the ABSENCE of a negative text phrase (see
+# checkers/tataneu.py), so a JS-dependent page that's simply empty without
+# rendering would resolve every product to IN STOCK — a systematic
+# false-positive-alert risk, not just a missed one. Not touching either
+# without an explicit real-URL test first.
+#
+# Blinkit — EXPERIMENTAL, pending real-URL verification (see
+# checkers/blinkit.py's NEEDS_JS comment for the full reasoning and the
+# rollback plan). Removed from this set to try render=false: unlike
+# Instamart, Blinkit's own documented behavior (_PINCODE_COMPLEX_SITES above)
+# is to fall back to a DEFAULT LOCALITY'S catalog (not a blank/gated page)
+# when location cookies are missing — a content-bearing fallback that's
+# plausibly resolved server-side, not proof this survives non-JS rendering,
+# but a real reason to suspect it might. The Cloudflare bot-management
+# cookies (__cf_bm/_cfuvid) documented there remain an open risk Scrape.do's
+# non-render fetch may or may not clear on its own. Failure mode if wrong is
+# the SAME safe direction as Instamart (defaults to OOS, not a false
+# positive) — if real /check results show this breaking (stuck OOS on a
+# confirmed-in-stock product), revert by adding "blinkit" back to this set;
+# this was deliberately committed separately from the Reliance
+# Digital/JioMart switch so it can be reverted independently.
 _JS_SITES = {
-    "zepto", "bigbasket", "blinkit", "croma", "instamart", "myntra",
+    "zepto", "bigbasket", "croma", "instamart", "myntra",
     "oneplus", "tataneu",
 }
 
