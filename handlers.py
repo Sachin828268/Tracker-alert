@@ -466,14 +466,14 @@ def _freetrial_share_only_keyboard(bot_link: str, lang: str) -> InlineKeyboardMa
     button is tapped, so this delay is the closest available approximation
     to "must tap Share before Done," not a real verification of it."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 Share on WhatsApp", url=_freetrial_wa_url(bot_link, lang))],
+        [InlineKeyboardButton(text=t("ft_btn_share", lang), url=_freetrial_wa_url(bot_link, lang))],
     ])
 
 
 def _freetrial_full_keyboard(bot_link: str, lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 Share on WhatsApp", url=_freetrial_wa_url(bot_link, lang))],
-        [InlineKeyboardButton(text="✅ Done", callback_data="freetrial:done")],
+        [InlineKeyboardButton(text=t("ft_btn_share", lang), url=_freetrial_wa_url(bot_link, lang))],
+        [InlineKeyboardButton(text=t("ft_btn_done", lang), callback_data="freetrial:done")],
     ])
 
 
@@ -520,12 +520,15 @@ async def _show_round(target: Message, bot, user_id: int, rounds_done: int, *, i
     asyncio.create_task(_reveal_done_button(bot, sent, user_id, rounds_done))
 
 
-_FREETRIAL_CONFIRM_KEYBOARD = InlineKeyboardMarkup(inline_keyboard=[
-    [
-        InlineKeyboardButton(text="✅ Yes, I confirm", callback_data="freetrial:confirm"),
-        InlineKeyboardButton(text="🔄 Retry", callback_data="freetrial:retry"),
-    ]
-])
+def _freetrial_confirm_keyboard(lang: str) -> InlineKeyboardMarkup:
+    """Confirm/Retry keyboard for the final /freetrial step. A function (not a
+    module-level constant) so the button labels render in the user's language."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=t("ft_btn_confirm", lang), callback_data="freetrial:confirm"),
+            InlineKeyboardButton(text=t("ft_btn_retry", lang), callback_data="freetrial:retry"),
+        ]
+    ])
 
 
 def _ft_confirm_text(lang: str) -> str:
@@ -556,7 +559,7 @@ async def cmd_freetrial(message: Message):
     rounds_done = get_share_trial_rounds(user_id)
     if rounds_done >= SHARE_TRIAL_ROUNDS_REQUIRED:
         await message.answer(
-            _ft_confirm_text(lang), parse_mode="HTML", reply_markup=_FREETRIAL_CONFIRM_KEYBOARD
+            _ft_confirm_text(lang), parse_mode="HTML", reply_markup=_freetrial_confirm_keyboard(lang)
         )
         return
 
@@ -575,7 +578,7 @@ async def callback_freetrial_done(call: CallbackQuery):
     rounds_done = increment_share_trial_round(user_id)
     if rounds_done >= SHARE_TRIAL_ROUNDS_REQUIRED:
         await call.message.edit_text(
-            _ft_confirm_text(lang), parse_mode="HTML", reply_markup=_FREETRIAL_CONFIRM_KEYBOARD
+            _ft_confirm_text(lang), parse_mode="HTML", reply_markup=_freetrial_confirm_keyboard(lang)
         )
     else:
         await _show_round(call.message, call.bot, user_id, rounds_done, is_new_message=False)

@@ -364,6 +364,28 @@ _T: dict[str, dict[str, str]] = {
                      "Cheating karne pe aapka free trial cancel ho jayega aur future free trials se "
                      "hamesha ke liye ban ho sakte ho.\n\nPhir bhi confirm karna hai?"),
     },
+    # Inline-button labels for the /freetrial flow. Kept short — they render on
+    # the buttons themselves, not in the message body.
+    "ft_btn_share": {
+        "en": "📤 Share on WhatsApp",
+        "hi": "📤 WhatsApp पर Share करें",
+        "hinglish": "📤 WhatsApp pe Share karo",
+    },
+    "ft_btn_done": {
+        "en": "✅ Done",
+        "hi": "✅ हो गया",
+        "hinglish": "✅ Ho gaya",
+    },
+    "ft_btn_confirm": {
+        "en": "✅ Yes, I confirm",
+        "hi": "✅ हाँ, confirm करता हूँ",
+        "hinglish": "✅ Haan, confirm",
+    },
+    "ft_btn_retry": {
+        "en": "🔄 Retry",
+        "hi": "🔄 दोबारा",
+        "hinglish": "🔄 Retry",
+    },
     "ft_already_used": {
         "en": ("🚫 <b>You've already used this offer.</b>\n\n"
                "The WhatsApp-share free trial can only be claimed once per account."),

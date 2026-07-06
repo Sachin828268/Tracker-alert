@@ -45,15 +45,21 @@ STATUS_LOCKED = "locked"
 # Commands regular (non-admin) users can always reach regardless of access
 # status: /start so a brand-new user can create their trial row and so a
 # locked user can see their status message, /cancel so nobody is ever
-# trapped mid-FSM-flow by an access change, and /freetrial since locked-out/
+# trapped mid-FSM-flow by an access change, /freetrial since locked-out/
 # expired users regaining access via a WhatsApp share is exactly this
-# feature's point — gating it behind access they don't have would be circular.
-_ALWAYS_ALLOWED_COMMANDS = {"/start", "/cancel", "/freetrial"}
+# feature's point — gating it behind access they don't have would be
+# circular — and /language so a brand-new, not-yet-approved user can pick
+# Hindi/English/Hinglish immediately during onboarding, before doing
+# anything else (every message they'll see afterwards depends on it).
+_ALWAYS_ALLOWED_COMMANDS = {"/start", "/cancel", "/freetrial", "/language"}
 
 # Callback-data prefixes for button flows that must stay reachable for the
-# same reason as /freetrial above — CallbackQuery events carry no `/command`
+# same reason as the commands above — CallbackQuery events carry no `/command`
 # text, so they aren't covered by the check above and need their own bypass.
-_ALWAYS_ALLOWED_CALLBACK_PREFIXES = ("freetrial:",)
+# "setlang:" is the language-picker's callback (see _language_keyboard in
+# handlers.py) — a locked user must be able to actually TAP a language, not
+# just invoke /language, for the onboarding pick to work.
+_ALWAYS_ALLOWED_CALLBACK_PREFIXES = ("freetrial:", "setlang:")
 
 
 @dataclass
