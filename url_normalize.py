@@ -159,6 +159,25 @@ _EXTRACTORS = {
     "jiomart": _jiomart,
 }
 
+# Stores whose stock RESULT genuinely depends on the user's pincode, so two
+# users at different pincodes must never share a single check:
+#   - apple: real per-pincode pickup availability (checkers/apple.refine_with_
+#     pincode calls Apple's fulfillment-messages API with the pincode).
+#   - zepto/blinkit/bigbasket/instamart: quick-commerce dark-store model —
+#     availability is location-specific (kept pincode-isolated even though the
+#     current cookie-injection is a no-op, so correctness is future-proof if
+#     real per-pincode resolution is added later).
+# For these, pincode is part of the group key (rows only merge within the same
+# pincode). For every OTHER store (amazon, flipkart, myntra, oneplus,
+# reliancedigital, jiomart, tataneu, croma, …) the checker result is
+# pincode-independent, so pincode is DROPPED from the key — otherwise users
+# with different pincodes tracking the identical product would be split into
+# separate groups and never dedup, which is what was suppressing merges in
+# production. A new pincode-sensitive store MUST be added to this set.
+_PINCODE_SENSITIVE_SITES = frozenset(
+    {"apple", "zepto", "blinkit", "bigbasket", "instamart"}
+)
+
 
 def normalize_url(site: str, url: str) -> str | None:
     """
@@ -181,17 +200,20 @@ def product_group_key(site: str, url: str, pincode: str | None = None) -> str:
     The dedup grouping key for a tracked product row. Rows sharing a key are
     checked ONCE and the result fans out to all of them.
 
-    Key = (site, canonical-id-or-raw-url, pincode). Pincode is part of the key
-    on purpose: some stores (Apple most notably) return genuinely different
-    stock per pincode, so two users at different pincodes must NEVER share a
-    single check — including pincode guarantees that while still deduping the
-    common case (same product, same/empty pincode).
+    Key = (site, canonical-id-or-raw-url, pincode-if-sensitive). Pincode is
+    included ONLY for stores in _PINCODE_SENSITIVE_SITES (apple + the
+    quick-commerce sites), whose stock genuinely varies by pincode — for those,
+    two users at different pincodes never share a check. For pincode-independent
+    catalog stores (amazon, flipkart, myntra, …) pincode is dropped, so users
+    with different pincodes tracking the identical product still merge (the
+    checker's result doesn't depend on pincode, so a single check is correct
+    for all of them).
 
     When normalize_url returns None the key uses the raw URL string, so only
     byte-identical URLs (unambiguously the same product) ever merge for that
     store — a conservative, correctness-preserving fallback.
     """
-    pin = pincode or ""
+    pin = (pincode or "") if site in _PINCODE_SENSITIVE_SITES else ""
     norm = normalize_url(site, url)
     if norm:
         return f"{site}{_SEP}id:{norm}{_SEP}{pin}"

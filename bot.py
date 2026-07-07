@@ -88,10 +88,13 @@ async def run_stock_check_cycle(bot: Bot) -> dict:
     track the same product (differently-formatted URLs for the same product
     normalize to the same id, so they group together).
 
-    Safety: pincode is part of the group key, so pincode-sensitive stores
-    (Apple) never share a check across different pincodes; a URL whose id can't
-    be extracted confidently keys on its raw string, so distinct products never
-    merge. The per-row fan-out is the same logic the old per-row loop ran.
+    Safety: pincode is part of the group key ONLY for pincode-sensitive stores
+    (Apple + quick-commerce — see url_normalize._PINCODE_SENSITIVE_SITES), so
+    those never share a check across different pincodes; pincode-independent
+    stores (Amazon, Flipkart, …) drop it and merge across pincodes since their
+    result doesn't depend on it. A URL whose id can't be extracted confidently
+    keys on its raw string, so distinct products never merge. The per-row
+    fan-out is the same logic the old per-row loop ran.
 
     Extracted from stock_checker_loop so a single cycle is directly testable
     (mirrors run_access_maintenance_cycle). Returns a small stats dict.
