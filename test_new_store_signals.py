@@ -111,7 +111,122 @@ def _text_context(html_text: str, pattern: str, window: int = 120) -> str:
     return "…" + html_text[start:end].replace("\n", " ").strip() + "…"
 
 
-def _probe(html: str) -> dict:
+# Magento/Adobe Commerce's own internal GraphQL + MSI (Multi-Source Inventory)
+# field names — distinct vocabulary from the generic OOS-text / button-state /
+# Shopify "available" signals already checked, and from JSON-LD (which Vijay
+# Sales' probe showed is static/stale). A PWA storefront commonly embeds the
+# initial GraphQL query result as JSON in the page for SSR hydration (the same
+# pattern as Next.js's __NEXT_DATA__) — if so, the REAL live stock data may be
+# here even though the static button/text scaffolding isn't.
+_MAGENTO_STOCK_PATTERNS = [
+    (r'"stock_status"\s*:\s*"(IN_STOCK|OUT_OF_STOCK)"', "stock_status"),
+    (r'"is_salable"\s*:\s*(true|false)', "is_salable"),
+    (r'"salable_quantity"\s*:\s*(\d+)', "salable_quantity"),
+    (r'"is_in_stock"\s*:\s*(true|false)', "is_in_stock"),
+]
+
+
+# Numeric id tokens are more useful when the id LOOKS like a real Magento
+# entity/SKU id (not a stray 1-2 digit number) — so only 5+ digit sequences
+# from the URL are used for correlation.
+_ID_TOKEN_RE = re.compile(r"\d{5,}")
+
+
+def _json_object_span(html: str, start: int) -> tuple[int, int] | None:
+    """
+    Given the position of an opening '{', return (start, end-exclusive) of its
+    matching closing '}' via a depth-counting scan that skips brace characters
+    inside string literals (tracking backslash-escapes so an escaped quote
+    doesn't end the string early). Returns None if unbalanced/truncated.
+    """
+    if start >= len(html) or html[start] != "{":
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    i = start
+    while i < len(html):
+        ch = html[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return start, i + 1
+        i += 1
+    return None
+
+
+def _own_product_object(html: str, id_tok: str) -> tuple[int, int] | None:
+    """
+    Find the JSON value object that BELONGS to a given id token — i.e. the
+    {...} immediately following a `"...<id_tok>...": ` key — rather than just
+    "nearby text", which a fixed character-offset window gets wrong as soon as
+    a product's own object is longer than the window (confirmed via a
+    realistic-scale synthetic test: a 400-char window mis-attributed a
+    NEIGHBORING product's IN_STOCK to the target OOS product, and missed the
+    target's own OUT_OF_STOCK entirely, because Apollo/GraphQL cache entries
+    routinely exceed 400 chars once padded with name/price/image/etc. fields).
+    Brace-matching properly bounds the search to exactly that product's own
+    object regardless of its length or how much sibling-entry noise surrounds
+    it. Returns None if no id occurrence is followed by a `{` within a short
+    lookahead (i.e. this id isn't actually a JSON object key here).
+    """
+    for m in re.finditer(re.escape(id_tok), html):
+        # Look for '{' within a short lookahead after the id (covers
+        # `"ProductInterface:245180":{` and similar key-then-colon-then-brace
+        # patterns) — NOT a big window, just enough to skip the closing quote/colon.
+        lookahead = html[m.end():m.end() + 30]
+        brace_offset = lookahead.find("{")
+        if brace_offset == -1:
+            continue
+        span = _json_object_span(html, m.end() + brace_offset)
+        if span:
+            return span
+    return None
+
+
+def _magento_stock_fields(html: str, url: str = "") -> list[str]:
+    """
+    Deduplicated `key=value (xN)` counts for each Magento stock field found
+    ANYWHERE in the raw HTML/embedded-JS, PLUS id-correlated matches scoped to
+    exactly the product's OWN JSON object (via _own_product_object) — a plain
+    page-wide count alone can't tell which stock_status belongs to THIS
+    product vs. a related-products/recommendation carousel embedding several
+    other products' data too.
+    """
+    from collections import Counter
+    counts = Counter()
+    for pattern, label in _MAGENTO_STOCK_PATTERNS:
+        for m in re.finditer(pattern, html, re.IGNORECASE):
+            counts[f"{label}={m.group(1)}"] += 1
+
+    correlated = []
+    for id_tok in set(_ID_TOKEN_RE.findall(url)):
+        span = _own_product_object(html, id_tok)
+        if span is None:
+            continue
+        own_json = html[span[0]:span[1]]
+        for pattern, label in _MAGENTO_STOCK_PATTERNS:
+            for m in re.finditer(pattern, own_json, re.IGNORECASE):
+                correlated.append(f"{label}={m.group(1)}  [OWN PRODUCT — id {id_tok!r}'s own JSON object]")
+
+    out = [f"{k} (×{v})" for k, v in counts.most_common(12)]
+    out += sorted(set(correlated))
+    return out
+
+
+def _probe(html: str, url: str = "") -> dict:
     low = html.lower()
     soup = BeautifulSoup(html, "html.parser")
     visible_text = soup.get_text(" ", strip=True)
@@ -155,6 +270,7 @@ def _probe(html: str) -> dict:
         "platforms": platforms,
         "jsonld_availability": _jsonld_availability(soup),
         "shopify_available_flags": re.findall(r'"available"\s*:\s*(true|false)', low)[:8],
+        "magento_stock_fields": _magento_stock_fields(html, url),
         "oos_text": oos_hits,
         "oos_text_context": {p: _text_context(visible_text, p) for p in oos_hits},
         "positive_text": positive_hits,
@@ -184,10 +300,11 @@ async def _run(url: str) -> None:
         print(f"  HTTP {status}, HTML length={len(html)}")
         if status != 200 or len(html) < 500:
             print("  ⚠️  likely blocked / challenge / empty — reachability problem")
-        info = _probe(html)
+        info = _probe(html, url)
         print(f"  platform markers      : {info['platforms'] or 'none detected'}")
         print(f"  JSON-LD availability  : {info['jsonld_availability'] or 'NONE'}")
         print(f"  shopify available flag: {info['shopify_available_flags'] or 'none'}")
+        print(f"  magento stock fields  : {info['magento_stock_fields'] or 'none'}")
         print(f"  OOS text present      : {info['oos_text'] or 'none'}")
         for p, ctx in info["oos_text_context"].items():
             print(f"      context for {p!r}: {ctx}")
