@@ -42,6 +42,23 @@ _POS_PATTERNS = [
     "add to cart", "add to bag", "add to basket", "buy now", "in stock",
     "add to wishlist and buy", "shop now",
 ]
+_ADD_BUTTON_PHRASES = (
+    "add to cart", "add to bag", "add to basket", "buy now", "add to wishlist and buy",
+    "shop now", "order now", "pre-order", "preorder", "buy", "purchase",
+)
+
+
+def _normalize_label(s: str) -> str:
+    """Lowercase-and-strip-separators form, so 'Add To Cart', 'add-to-cart',
+    and 'addToCart' (once lowercased: 'addtocart') all compare equal. A plain
+    substring check against phrases WITH spaces (e.g. "add to cart") silently
+    misses camelCase/CSS-module class names with no spaces at all — a common
+    pattern on custom-built SPA storefronts."""
+    return re.sub(r"[\s\-_]+", "", s)
+
+
+_ADD_BUTTON_PHRASES_NORM = [_normalize_label(p) for p in _ADD_BUTTON_PHRASES]
+
 _PLATFORM_MARKERS = {
     "Shopify": ["cdn.shopify.com", "shopify.theme", "/cdn/shop/", "myshopify", "shopify-section"],
     "Magento/Adobe": ["mage/", "magento", "/static/version", "adobe commerce", "mage-init", "catalog-product"],
@@ -232,22 +249,52 @@ def _probe(html: str, url: str = "") -> dict:
     visible_text = soup.get_text(" ", strip=True)
     platforms = [name for name, marks in _PLATFORM_MARKERS.items() if any(m in low for m in marks)]
 
-    buttons = []
-    for el in soup.find_all(["button", "input", "a"]):
+    # Clickable candidates: semantic button/input/a tags PLUS div/span elements
+    # that behave as buttons via role="button" or an onclick handler — custom
+    # SPA storefronts (a brand site like Oppo is a likely example) very
+    # commonly implement "buttons" this way instead of semantic <button> tags,
+    # which a tag-scoped scan would silently miss entirely.
+    seen_ids: set[int] = set()
+    clickable_els = []
+    for el in (
+        soup.find_all(["button", "input", "a"])
+        + soup.find_all(["div", "span"], attrs={"role": "button"})
+        + soup.find_all(["div", "span"], onclick=True)
+    ):
+        if id(el) not in seen_ids:
+            seen_ids.add(id(el))
+            clickable_els.append(el)
+
+    buttons = []              # matched a known buy-phrase (strict signal)
+    loose_candidates = []     # any other short-text clickable element, for
+                               # manual review in case the real wording isn't
+                               # one we anticipated at all
+    for el in clickable_els:
+        text = el.get_text(" ", strip=True)
         label = " ".join(filter(None, [
-            el.get_text(" ", strip=True),
+            text,
             el.get("value", "") or "",
             el.get("name", "") or "",
+            el.get("aria-label", "") or "",   # icon-only buttons have no visible text
+            el.get("data-testid", "") or "",
             " ".join(el.get("class", []) or []),
         ])).lower()
-        if any(p in label for p in ("add to cart", "add to bag", "buy now", "add to basket")) and len(label) < 90:
+        norm = _normalize_label(label)
+        is_buy_like = (
+            any(p in label for p in _ADD_BUTTON_PHRASES)
+            or any(p in norm for p in _ADD_BUTTON_PHRASES_NORM)
+        )
+        if is_buy_like and len(label) < 150:
             buttons.append(
-                f"<{el.name}> disabled={el.get('disabled')!r} aria-disabled={el.get('aria-disabled')!r} "
-                f"class={el.get('class')} text={el.get_text(' ', strip=True)[:35]!r} "
-                f"ancestors={_ancestor_classes(el)}"
+                f"<{el.name}> role={el.get('role')!r} onclick={'yes' if el.get('onclick') else 'no'} "
+                f"disabled={el.get('disabled')!r} aria-disabled={el.get('aria-disabled')!r} "
+                f"class={el.get('class')} aria-label={el.get('aria-label')!r} "
+                f"text={text[:35]!r} ancestors={_ancestor_classes(el)}"
             )
-            if len(buttons) >= 6:
-                break
+        elif 0 < len(text) < 40:
+            loose_candidates.append(f"<{el.name}> text={text!r} class={el.get('class')}")
+    buttons = buttons[:10]
+    loose_candidates = loose_candidates[:15]
 
     # Structural stock-status elements: any element whose OWN class (not text)
     # contains a stock-related marker. Printed regardless of what it says, so
@@ -277,6 +324,7 @@ def _probe(html: str, url: str = "") -> dict:
         "positive_text_context": {p: _text_context(visible_text, p) for p in positive_hits},
         "stock_class_elements": stock_class_elements,
         "buttons": buttons,
+        "loose_candidates": loose_candidates,
     }
 
 
@@ -317,6 +365,9 @@ async def _run(url: str) -> None:
         print(f"  add/buy buttons ({len(info['buttons'])}):")
         for b in info["buttons"]:
             print(f"      {b}")
+        print(f"  loose clickable candidates, no known phrase matched ({len(info['loose_candidates'])}):")
+        for c in info["loose_candidates"]:
+            print(f"      {c}")
 
 
 async def main() -> None:
