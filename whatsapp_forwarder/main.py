@@ -131,7 +131,14 @@ def _tg_send_text(text: str) -> None:
 # ---------------------------------------------------------------------------
 _QR_CANVAS_SELECTORS = [
     'canvas[aria-label="Scan this QR code to link a device!"]',
+    'canvas[aria-label*="Scan"]',
     'div[data-ref] canvas',
+    'div._akau canvas',
+    'div[data-testid="qrcode"] canvas',
+    'landing-window canvas',
+    # Last resort: WhatsApp Web's login page has no other canvas on it, so
+    # "any visible canvas at all" is a safe fallback when every more
+    # specific selector above is stale.
     'canvas',
 ]
 _LOGGED_IN_SELECTORS = [
@@ -229,6 +236,47 @@ class WhatsAppWorker:
         loc, _ = _first_match(page, _LOGGED_IN_SELECTORS, timeout_ms=3000)
         self.state.logged_in = loc is not None
 
+    def _diagnostic_snapshot(self, context: str) -> None:
+        """Log enough about current page state to diagnose a selector miss
+        without needing shell/volume access to the Railway container: page
+        title, URL, and how many <canvas> elements exist at all (0 means the
+        selectors aren't just stale — WhatsApp isn't even rendering a QR
+        canvas, e.g. a cookie-consent popup, an "unsupported browser"
+        warning, or an automation-detection block)."""
+        page = self._page
+        try:
+            title = page.title()
+        except Exception as exc:
+            title = f"<error: {exc}>"
+        try:
+            url = page.url
+        except Exception as exc:
+            url = f"<error: {exc}>"
+        try:
+            canvas_count = page.locator("canvas").count()
+        except Exception as exc:
+            canvas_count = f"<error: {exc}>"
+        logger.warning(
+            f"[login] {context} — title={title!r} url={url!r} canvas_count={canvas_count}"
+        )
+
+    def _send_full_page_fallback(self) -> None:
+        """Last resort when no canvas (QR-specific or generic) can be found
+        at all: screenshot the WHOLE page and DM it, so the admin can see
+        exactly what WhatsApp Web is actually showing (error dialog, cookie
+        popup, different UI entirely) instead of just a log line saying
+        "not found"."""
+        try:
+            shot = self._page.screenshot(full_page=True)
+            _tg_send_photo(
+                shot,
+                "⚠️ Couldn't find any QR code canvas on the page. Here's the "
+                "full page instead — check for a cookie/consent popup, an "
+                "error dialog, or an unexpected screen.",
+            )
+        except Exception as exc:
+            logger.error(f"[login] full-page fallback screenshot failed: {exc}")
+
     def _ensure_logged_in(self) -> None:
         page = self._page
         self._refresh_login_state()
@@ -244,6 +292,8 @@ class WhatsAppWorker:
         )
         deadline = time.monotonic() + QR_BOOTSTRAP_TIMEOUT_SECONDS
         last_qr_bytes: bytes | None = None
+        consecutive_misses = 0
+        sent_full_page_fallback = False
 
         while time.monotonic() < deadline:
             self._refresh_login_state()
@@ -254,11 +304,30 @@ class WhatsAppWorker:
 
             qr_loc, sel = _first_match(page, _QR_CANVAS_SELECTORS, timeout_ms=3000)
             if qr_loc is None:
-                logger.warning("[login] QR canvas not found with any known selector — retrying")
-                page.goto("https://web.whatsapp.com", wait_until="domcontentloaded")
+                consecutive_misses += 1
+                self._diagnostic_snapshot(
+                    f"QR canvas not found with any known selector (miss #{consecutive_misses})"
+                )
+                if consecutive_misses == 3 and not sent_full_page_fallback:
+                    self._send_full_page_fallback()
+                    sent_full_page_fallback = True
+                # Reload periodically rather than every single miss — reloading
+                # every 3s never gives a slow-rendering page a chance to finish,
+                # and constant reloads would themselves explain a permanent
+                # "not found" (the QR barely has time to render before the next
+                # goto tears it down).
+                if consecutive_misses % 10 == 0:
+                    logger.info("[login] reloading page after repeated misses")
+                    try:
+                        page.goto("https://web.whatsapp.com", wait_until="domcontentloaded")
+                    except Exception as exc:
+                        logger.error(f"[login] reload failed: {exc}")
+                    sent_full_page_fallback = False  # allow one fresh fallback shot post-reload
                 time.sleep(3)
                 continue
 
+            consecutive_misses = 0
+            logger.info(f"[login] QR canvas found via selector: {sel!r}")
             try:
                 shot = qr_loc.screenshot()
             except Exception as exc:
