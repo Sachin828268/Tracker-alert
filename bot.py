@@ -270,6 +270,8 @@ async def register_commands(bot: Bot) -> None:
         BotCommand(command="pins",   description="Manage your delivery pin codes"),
         BotCommand(command="language", description="Change language (English / हिंदी / Hinglish)"),
         BotCommand(command="freetrial", description="Get a bonus free trial by sharing on WhatsApp"),
+        BotCommand(command="setwhatsapp", description="Link your WhatsApp Channel/Community for alerts"),
+        BotCommand(command="whatsappstatus", description="Check your WhatsApp channel link status"),
         BotCommand(command="cancel", description="Cancel the current operation"),
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
@@ -291,6 +293,9 @@ async def register_commands(bot: Bot) -> None:
         BotCommand(command="finduser",    description="[admin] Full profile for one user"),
         BotCommand(command="broadcast",   description="[admin] Message all active users"),
         BotCommand(command="stats",       description="[admin] Usage & revenue summary"),
+        BotCommand(command="whatsapppending", description="[admin] WhatsApp channels awaiting approval"),
+        BotCommand(command="whatsappapprove", description="[admin] Approve a user's WhatsApp channel"),
+        BotCommand(command="whatsappdisable", description="[admin] Disable a user's WhatsApp forwarding"),
     ]
     # Scoped ONLY to the admin's own chat — regular users never see these in
     # their Telegram "/" menu, on top of being functionally unreachable to

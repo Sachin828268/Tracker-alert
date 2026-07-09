@@ -218,6 +218,28 @@ def init_db():
             CREATE UNIQUE INDEX IF NOT EXISTS idx_site_locks_user
             ON site_locks(user_id, site) WHERE user_id IS NOT NULL
         """)
+
+        # ── WhatsApp channel forwarding (per-user, admin-approved) ────────────
+        # Each user may register their OWN WhatsApp Channel/Community invite
+        # link; once the admin manually joins it and approves the registration
+        # here, "back in stock" alerts for that user ALSO forward to their
+        # channel (see whatsapp_client.py). status:
+        #   pending  → registered, awaiting admin approval (not yet forwarding)
+        #   active   → approved, alerts forward to invite_link
+        #   disabled → admin revoked; kept (not deleted) so the user's link and
+        #              history aren't lost if re-enabled later
+        # One row per user (a user has exactly one registered channel at a time
+        # — re-running /setwhatsapp overwrites it and resets to pending).
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS whatsapp_channels (
+                user_id            INTEGER PRIMARY KEY,
+                invite_link        TEXT    NOT NULL,
+                status             TEXT    NOT NULL DEFAULT 'pending',
+                registered_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+                approved_at        TEXT,
+                approved_by_admin  INTEGER
+            )
+        """)
         conn.commit()
 
         # Migration: every pre-existing user (found via products/pin_codes) who
@@ -604,6 +626,103 @@ def list_user_site_locks(user_id: int) -> set[str]:
             "SELECT site FROM site_locks WHERE user_id = ?", (user_id,)
         ).fetchall()
     return {r["site"] for r in rows}
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp channel forwarding (per-user, admin-approved)
+# ---------------------------------------------------------------------------
+
+def register_whatsapp_channel(user_id: int, invite_link: str) -> None:
+    """
+    Register (or replace) a user's WhatsApp channel invite link. ALWAYS resets
+    status to 'pending' — even re-registering an already-active channel with a
+    NEW link requires fresh admin approval (the admin manually joins each
+    link; a changed link means they haven't joined that one yet), and clears
+    any prior approval bookkeeping.
+    """
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO whatsapp_channels (user_id, invite_link, status, registered_at, approved_at, approved_by_admin)
+            VALUES (?, ?, 'pending', ?, NULL, NULL)
+            ON CONFLICT(user_id) DO UPDATE SET
+                invite_link = excluded.invite_link,
+                status = 'pending',
+                registered_at = excluded.registered_at,
+                approved_at = NULL,
+                approved_by_admin = NULL
+            """,
+            (user_id, invite_link, now_ist_str()),
+        )
+        conn.commit()
+
+
+def get_whatsapp_channel(user_id: int) -> Optional[dict]:
+    """This user's WhatsApp channel registration row, or None if never registered."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM whatsapp_channels WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_active_whatsapp_channel(user_id: int) -> Optional[str]:
+    """This user's invite_link IF their registration is currently 'active',
+    else None. The single lookup whatsapp_client.py uses before forwarding —
+    pending/disabled/never-registered are all treated identically (no forward)."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT invite_link FROM whatsapp_channels WHERE user_id = ? AND status = 'active'",
+            (user_id,),
+        ).fetchone()
+    return row["invite_link"] if row else None
+
+
+def approve_whatsapp_channel(user_id: int, admin_id: int) -> bool:
+    """Mark a pending (or disabled) registration as active. Returns False if
+    no registration exists for this user at all."""
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE whatsapp_channels
+            SET status = 'active', approved_at = ?, approved_by_admin = ?
+            WHERE user_id = ?
+            """,
+            (now_ist_str(), admin_id, user_id),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def disable_whatsapp_channel(user_id: int) -> bool:
+    """Revoke forwarding for this user (kept, not deleted, so the link/history
+    survive a later re-approval). Returns False if no registration exists."""
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE whatsapp_channels SET status = 'disabled' WHERE user_id = ?",
+            (user_id,),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def list_pending_whatsapp_channels() -> list[dict]:
+    """All registrations awaiting admin approval, oldest first."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM whatsapp_channels WHERE status = 'pending' ORDER BY registered_at ASC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_all_whatsapp_channels() -> list[dict]:
+    """Every registration regardless of status, most recently registered first
+    — for the dashboard's full list view."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM whatsapp_channels ORDER BY registered_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

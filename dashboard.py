@@ -71,6 +71,9 @@ from database import (
     list_user_site_locks,
     set_global_site_lock,
     set_user_site_lock,
+    list_all_whatsapp_channels,
+    approve_whatsapp_channel,
+    disable_whatsapp_channel,
 )
 from notifications import (
     approval_notice_text,
@@ -772,6 +775,40 @@ def create_app() -> Flask:
             "ok",
         )
         return redirect(url_for("user_detail", uid=uid))
+
+    @app.route("/whatsapp")
+    @login_required
+    def whatsapp_channels():
+        rows = []
+        for row in list_all_whatsapp_channels():
+            u = get_user(row["user_id"])
+            rows.append({
+                **row,
+                "display_name": _display_name(u) if u else str(row["user_id"]),
+            })
+        return render_template("whatsapp_channels.html", rows=rows)
+
+    @app.route("/whatsapp/<int:uid>/approve", methods=["POST"])
+    @login_required
+    def whatsapp_channel_approve(uid):
+        if approve_whatsapp_channel(uid, ADMIN_USER_ID):
+            flash(
+                f"WhatsApp channel for user {uid} approved — make sure you've "
+                f"already joined it, otherwise alerts won't reach it.",
+                "ok",
+            )
+        else:
+            flash(f"No WhatsApp channel registration found for user {uid}.", "bad")
+        return redirect(url_for("whatsapp_channels"))
+
+    @app.route("/whatsapp/<int:uid>/disable", methods=["POST"])
+    @login_required
+    def whatsapp_channel_disable(uid):
+        if disable_whatsapp_channel(uid):
+            flash(f"WhatsApp channel forwarding for user {uid} disabled.", "ok")
+        else:
+            flash(f"No WhatsApp channel registration found for user {uid}.", "bad")
+        return redirect(url_for("whatsapp_channels"))
 
     return app
 

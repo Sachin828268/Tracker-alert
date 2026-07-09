@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from datetime import datetime
 from urllib.parse import urlparse, quote
 
@@ -34,6 +35,9 @@ from database import (
     reset_share_trial_rounds,
     get_user_lang,
     set_user_lang,
+    register_whatsapp_channel,
+    get_whatsapp_channel,
+    approve_whatsapp_channel,
 )
 from access import check_can_add_item, compute_access, access_denied_text, REASON_ITEM_LIMIT
 from notifications import send_stock_alert, should_alert_for_price
@@ -1380,3 +1384,48 @@ async def callback_pin_remove(call: CallbackQuery):
 async def callback_pin_close(call: CallbackQuery):
     await call.message.edit_text("📍 Pin code manager closed.")
     await call.answer()
+
+
+# ---------------------------------------------------------------------------
+# /setwhatsapp, /whatsappstatus — per-user WhatsApp Channel/Community
+# forwarding registration (see whatsapp_client.py + database.whatsapp_channels)
+# ---------------------------------------------------------------------------
+_WHATSAPP_LINK_RE = re.compile(
+    r"^https://(whatsapp\.com/channel/\S+|chat\.whatsapp\.com/\S+)$"
+)
+
+
+@router.message(Command("setwhatsapp"))
+async def cmd_setwhatsapp(message: Message, command: CommandObject):
+    lang = get_user_lang(message.from_user.id)
+    link = (command.args or "").strip()
+    if not link:
+        await message.answer(t("whatsapp_usage", lang), parse_mode="HTML")
+        return
+    if not _WHATSAPP_LINK_RE.match(link):
+        await message.answer(t("whatsapp_link_invalid", lang), parse_mode="HTML")
+        return
+    register_whatsapp_channel(message.from_user.id, link)
+    if message.from_user.id == ADMIN_USER_ID:
+        # The admin can't approve their own pending registration from the
+        # dashboard the normal way (they ARE the approver) — auto-approve so
+        # their own alerts forward the same as everyone else's once approved.
+        approve_whatsapp_channel(message.from_user.id, ADMIN_USER_ID)
+        await message.answer(t("whatsapp_status_active", lang), parse_mode="HTML")
+        return
+    await message.answer(t("whatsapp_registered_pending", lang), parse_mode="HTML")
+
+
+@router.message(Command("whatsappstatus"))
+async def cmd_whatsappstatus(message: Message):
+    lang = get_user_lang(message.from_user.id)
+    channel = get_whatsapp_channel(message.from_user.id)
+    if not channel:
+        key = "whatsapp_status_none"
+    else:
+        key = {
+            "pending": "whatsapp_status_pending",
+            "active": "whatsapp_status_active",
+            "disabled": "whatsapp_status_disabled",
+        }.get(channel["status"], "whatsapp_status_none")
+    await message.answer(t(key, lang), parse_mode="HTML")

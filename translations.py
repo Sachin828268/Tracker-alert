@@ -1143,4 +1143,137 @@ _T: dict[str, dict[str, str]] = {
         "tamil": "👋 வரவேற்கிறோம்! முதலில், உங்கள் மொழியை தேர்ந்தெடுங்கள்:",
         "gujarati": "👋 સ્વાગત છે! પહેલા, તમારી ભાષા પસંદ કરો:",
     },
+
+    # ── WhatsApp channel forwarding ─────────────────────────────────────────
+    "whatsapp_usage": {
+        "en": ("📲 <b>Link your WhatsApp Channel/Community</b>\n\n"
+               "Usage: <code>/setwhatsapp &lt;invite link&gt;</code>\n\n"
+               "Add the admin as a member/admin of your Channel or Community first, "
+               "then send its invite link here. The admin will review and approve it "
+               "before your \"back in stock\" alerts start forwarding there too."),
+        "hi": ("📲 <b>अपना WhatsApp Channel/Community जोड़ें</b>\n\n"
+               "इस्तेमाल करें: <code>/setwhatsapp &lt;invite link&gt;</code>\n\n"
+               "पहले admin को अपने Channel या Community में member/admin बनाएं, "
+               "फिर उसका invite link यहाँ भेजें। Admin इसे review करके approve करेंगे, "
+               "उसके बाद आपके \"back in stock\" alerts वहाँ भी forward होने लगेंगे।"),
+        "hinglish": ("📲 <b>Apna WhatsApp Channel/Community link karo</b>\n\n"
+                     "Usage: <code>/setwhatsapp &lt;invite link&gt;</code>\n\n"
+                     "Pehle admin ko apne Channel ya Community me member/admin banao, "
+                     "phir uska invite link yahan bhejo. Admin ise review karke approve "
+                     "karega, uske baad aapke \"back in stock\" alerts wahan bhi "
+                     "forward hone lagenge."),
+        "punjabi": ("📲 <b>Apna WhatsApp Channel/Community link karo ji</b>\n\n"
+                    "Use karo: <code>/setwhatsapp &lt;invite link&gt;</code>\n\n"
+                    "Pehlan admin nu apne Channel ja Community 'ch member/admin banao, "
+                    "fer ohda invite link ithe bhejo. Admin review karke approve karega, "
+                    "usde baad tuhade \"back in stock\" alerts othe vi jaan lagn ge!"),
+        "haryanvi": ("📲 <b>अपणा WhatsApp Channel/Community जोड़ दे</b>\n\n"
+                     "इसा यूज़ कर: <code>/setwhatsapp &lt;invite link&gt;</code>\n\n"
+                     "पैहले admin नै अपणे Channel या Community म्ह member/admin बणा, "
+                     "फेर उसका invite link न्ह्यां भेज दे। Admin चैक करके approve "
+                     "करैगा, बाद म्ह थारे \"back in stock\" alerts ओड़ैभी जाणा शुरू "
+                     "होज्यांगे।"),
+        "tamil": ("📲 <b>உங்கள் WhatsApp Channel/Community-ஐ இணைக்கவும்</b>\n\n"
+                  "பயன்பாடு: <code>/setwhatsapp &lt;invite link&gt;</code>\n\n"
+                  "முதலில் admin-ஐ உங்கள் Channel அல்லது Community-ல் member/admin "
+                  "ஆக சேர்க்கவும், பிறகு அதன் invite link-ஐ இங்கே அனுப்பவும். Admin "
+                  "பரிசீலித்து approve செய்த பிறகு உங்கள் \"back in stock\" alerts "
+                  "அங்கும் forward ஆகும்."),
+        "gujarati": ("📲 <b>તમારું WhatsApp Channel/Community લિંક કરો</b>\n\n"
+                     "ઉપયોગ: <code>/setwhatsapp &lt;invite link&gt;</code>\n\n"
+                     "પહેલા admin ને તમારા Channel અથવા Community માં member/admin "
+                     "બનાવો, પછી તેની invite link અહીં મોકલો. Admin તેની સમીક્ષા કરીને "
+                     "approve કરશે, ત્યાર પછી તમારા \"back in stock\" alerts ત્યાં પણ "
+                     "forward થવા લાગશે."),
+    },
+    "whatsapp_link_invalid": {
+        "en": ("⚠️ That doesn't look like a WhatsApp Channel/Community invite link.\n\n"
+               "It should look like <code>https://whatsapp.com/channel/...</code> or "
+               "<code>https://chat.whatsapp.com/...</code>."),
+        "hi": ("⚠️ ये WhatsApp Channel/Community का invite link नहीं लग रहा।\n\n"
+               "ये कुछ ऐसा दिखना चाहिए: <code>https://whatsapp.com/channel/...</code> "
+               "या <code>https://chat.whatsapp.com/...</code>."),
+        "hinglish": ("⚠️ Ye WhatsApp Channel/Community ka invite link nahi lag raha.\n\n"
+                     "Aisa dikhna chahiye: <code>https://whatsapp.com/channel/...</code> "
+                     "ya <code>https://chat.whatsapp.com/...</code>."),
+        "punjabi": ("⚠️ Eh WhatsApp Channel/Community da invite link nahi lagda ji.\n\n"
+                    "Ajeha dikhna chahida: <code>https://whatsapp.com/channel/...</code> "
+                    "ja <code>https://chat.whatsapp.com/...</code>."),
+        "haryanvi": ("⚠️ ये WhatsApp Channel/Community का invite link कोनी लाग रहा।\n\n"
+                     "इसा दिखणा चाहिए: <code>https://whatsapp.com/channel/...</code> "
+                     "या <code>https://chat.whatsapp.com/...</code>."),
+        "tamil": ("⚠️ இது WhatsApp Channel/Community invite link போல் தெரியவில்லை.\n\n"
+                  "இது இப்படி இருக்க வேண்டும்: <code>https://whatsapp.com/channel/...</code> "
+                  "அல்லது <code>https://chat.whatsapp.com/...</code>."),
+        "gujarati": ("⚠️ આ WhatsApp Channel/Community ની invite link લાગતી નથી.\n\n"
+                     "આના જેવી હોવી જોઈએ: <code>https://whatsapp.com/channel/...</code> "
+                     "અથવા <code>https://chat.whatsapp.com/...</code>."),
+    },
+    "whatsapp_registered_pending": {
+        "en": ("✅ <b>Channel link saved!</b>\n\n"
+               "It's now pending admin approval — the admin needs to join your "
+               "Channel/Community before forwarding can start. Check /whatsappstatus "
+               "any time."),
+        "hi": ("✅ <b>Channel link save हो गया!</b>\n\n"
+               "अब ये admin approval का इंतज़ार कर रहा है — forwarding शुरू होने से "
+               "पहले admin को आपके Channel/Community में join करना होगा। कभी भी "
+               "/whatsappstatus से status देख सकते हैं।"),
+        "hinglish": ("✅ <b>Channel link save ho gaya!</b>\n\n"
+                     "Ab ye admin approval ka wait kar raha hai — forwarding shuru "
+                     "hone se pehle admin ko aapke Channel/Community me join karna "
+                     "hoga. Kabhi bhi /whatsappstatus se status dekh sakte ho."),
+        "punjabi": ("✅ <b>Channel link save ho gaya ji!</b>\n\n"
+                    "Hun eh admin approval da wait kar riha hai — forwarding shuru "
+                    "hon tou pehlan admin nu tuhade Channel/Community 'ch join karna "
+                    "pavega. Kadi vi /whatsappstatus naal status vekh sakde ho."),
+        "haryanvi": ("✅ <b>Channel link सेव होगी!</b>\n\n"
+                     "अब ये admin approval का इंतजार कर रही सै — forwarding चालू "
+                     "होण तै पैहले admin नै थारे Channel/Community म्ह join करणा "
+                     "पड़ैगा। कदे भी /whatsappstatus तै स्टेटस देख ले।"),
+        "tamil": ("✅ <b>Channel link சேமிக்கப்பட்டது!</b>\n\n"
+                  "இது இப்போது admin ஒப்புதலுக்காக காத்திருக்கிறது — forward "
+                  "தொடங்கும் முன் admin உங்கள் Channel/Community-ல் join செய்ய "
+                  "வேண்டும். எப்போது வேண்டுமானாலும் /whatsappstatus மூலம் status "
+                  "பார்க்கலாம்."),
+        "gujarati": ("✅ <b>Channel link સેવ થઈ ગઈ!</b>\n\n"
+                     "તે હવે admin approval ની રાહ જોઈ રહી છે — forwarding શરૂ "
+                     "થાય તે પહેલાં admin એ તમારા Channel/Community માં join થવું "
+                     "પડશે. ગમે ત્યારે /whatsappstatus થી status જુઓ."),
+    },
+    "whatsapp_status_none": {
+        "en": "📭 You haven't linked a WhatsApp Channel/Community yet. Use /setwhatsapp to add one.",
+        "hi": "📭 आपने अभी तक कोई WhatsApp Channel/Community नहीं जोड़ा। जोड़ने के लिए /setwhatsapp इस्तेमाल करें।",
+        "hinglish": "📭 Aapne abhi tak koi WhatsApp Channel/Community link nahi kiya. Add karne ke liye /setwhatsapp use karo.",
+        "punjabi": "📭 Tusi hun tak koi WhatsApp Channel/Community link nahi kita. Add karan layi /setwhatsapp use karo ji.",
+        "haryanvi": "📭 तन्नै अबतक कोए WhatsApp Channel/Community कोनी जोड़ा। जोड़ण खात्तर /setwhatsapp दबा दे।",
+        "tamil": "📭 நீங்கள் இன்னும் WhatsApp Channel/Community இணைக்கவில்லை. சேர்க்க /setwhatsapp பயன்படுத்துங்கள்.",
+        "gujarati": "📭 તમે હજુ સુધી કોઈ WhatsApp Channel/Community લિંક કર્યું નથી. ઉમેરવા /setwhatsapp નો ઉપયોગ કરો.",
+    },
+    "whatsapp_status_pending": {
+        "en": "⏳ Your WhatsApp Channel is registered and awaiting admin approval.",
+        "hi": "⏳ आपका WhatsApp Channel register हो चुका है और admin approval का इंतज़ार है।",
+        "hinglish": "⏳ Aapka WhatsApp Channel register ho chuka hai aur admin approval ka wait hai.",
+        "punjabi": "⏳ Tuhada WhatsApp Channel register ho chuka hai te admin approval da wait hai ji.",
+        "haryanvi": "⏳ थारा WhatsApp Channel रजिस्टर होग्या सै अर admin approval का इंतजार सै।",
+        "tamil": "⏳ உங்கள் WhatsApp Channel பதிவு செய்யப்பட்டு admin ஒப்புதலுக்காக காத்திருக்கிறது.",
+        "gujarati": "⏳ તમારું WhatsApp Channel register થઈ ગયું છે અને admin approval ની રાહ જોવાઈ રહી છે.",
+    },
+    "whatsapp_status_active": {
+        "en": "✅ Your WhatsApp Channel is active — \"back in stock\" alerts forward there automatically.",
+        "hi": "✅ आपका WhatsApp Channel active है — \"back in stock\" alerts वहाँ अपने आप forward होते हैं।",
+        "hinglish": "✅ Aapka WhatsApp Channel active hai — \"back in stock\" alerts wahan apne aap forward hote hain.",
+        "punjabi": "✅ Tuhada WhatsApp Channel active hai ji — \"back in stock\" alerts othe apne aap forward hunde ne.",
+        "haryanvi": "✅ थारा WhatsApp Channel एक्टिव सै — \"back in stock\" alerts ओड़ैभी अपने आप forward होवैं सैं।",
+        "tamil": "✅ உங்கள் WhatsApp Channel செயலில் உள்ளது — \"back in stock\" alerts தானாக அங்கு forward ஆகும்.",
+        "gujarati": "✅ તમારું WhatsApp Channel active છે — \"back in stock\" alerts ત્યાં આપોઆપ forward થાય છે.",
+    },
+    "whatsapp_status_disabled": {
+        "en": "🚫 Your WhatsApp Channel forwarding has been disabled by the admin. Contact them, or /setwhatsapp a new link.",
+        "hi": "🚫 आपका WhatsApp Channel forwarding admin ने बंद कर दिया है। उनसे संपर्क करें, या /setwhatsapp से नया link भेजें।",
+        "hinglish": "🚫 Aapka WhatsApp Channel forwarding admin ne band kar diya hai. Unse contact karo, ya /setwhatsapp se naya link bhejo.",
+        "punjabi": "🚫 Tuhada WhatsApp Channel forwarding admin ne band kar dita hai. Unhan nu sampark karo, ja /setwhatsapp naal navan link bhejo.",
+        "haryanvi": "🚫 थारा WhatsApp Channel forwarding admin नै बंद करदिया सै। उसतै बात कर, या /setwhatsapp तै नया link भेज दे।",
+        "tamil": "🚫 உங்கள் WhatsApp Channel forwarding admin ஆல் முடக்கப்பட்டுள்ளது. அவரைத் தொடர்பு கொள்ளுங்கள், அல்லது /setwhatsapp மூலம் புதிய link அனுப்புங்கள்.",
+        "gujarati": "🚫 તમારું WhatsApp Channel forwarding admin દ્વારા બંધ કરવામાં આવ્યું છે. તેમનો સંપર્ક કરો, અથવા /setwhatsapp થી નવી link મોકલો.",
+    },
 }

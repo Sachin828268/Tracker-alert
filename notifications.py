@@ -12,6 +12,7 @@ async senders resolve it themselves via database.get_user_lang so their
 callers don't have to.
 """
 
+import asyncio
 import html
 import logging
 
@@ -21,6 +22,7 @@ from config import UNRELIABLE_SITES
 from database import get_user_lang, is_site_locked
 from translations import t
 from affiliate import get_affiliate_url
+import whatsapp_client
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +87,18 @@ async def send_stock_alert(bot: Bot, product: dict, price: float | None = None):
         )
     except Exception as exc:
         logger.error(f"Failed to send alert: {exc}")
+
+    # Best-effort forward to this user's OWN registered WhatsApp channel (if
+    # any — see whatsapp_client.py). Fire-and-forget: scheduled as a separate
+    # task rather than awaited, so it can NEVER delay or block the Telegram
+    # send above (which has already completed by this point either way), and
+    # any failure inside it is caught internally and only logged.
+    asyncio.create_task(
+        whatsapp_client.forward_alert(
+            product, name=product["name"], site=product["site"],
+            alert_url=alert_url, price=price, lang=lang,
+        )
+    )
 
 
 async def _safe_send(bot: Bot, user_id: int, text: str) -> bool:

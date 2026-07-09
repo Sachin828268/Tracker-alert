@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% set active = 'whatsapp_channels' %}
+{% block title %}WhatsApp channels{% endblock %}
+{% block body %}
+<h1>WhatsApp channels — per user</h1>
+<p class="note" style="margin-top:0;">
+  Each user registers their <b>own</b> WhatsApp Channel or Community via
+  <code>/setwhatsapp &lt;invite link&gt;</code> and adds the admin's WhatsApp
+  number as a member/admin of it. Before approving here, join that channel
+  yourself with the admin WhatsApp account — approval only flips the status
+  in the database, it does not join anything automatically. Once approved,
+  that user's "back in stock" alerts also forward to their channel.
+</p>
+<div class="tablewrap">
+  <table>
+    <thead>
+      <tr><th>User</th><th>Invite link</th><th>Status</th><th>Registered</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td><a href="{{ url_for('user_detail', uid=r.user_id) }}">{{ r.display_name }}</a> <span class="note">#{{ r.user_id }}</span></td>
+        <td><a href="{{ r.invite_link }}" target="_blank" rel="noopener">{{ r.invite_link }}</a></td>
+        <td>
+          {% if r.status == 'active' %}<span class="pill ok">Active</span>
+          {% elif r.status == 'pending' %}<span class="pill warn">Pending</span>
+          {% else %}<span class="pill bad">Disabled</span>{% endif %}
+        </td>
+        <td>{{ r.registered_at }}</td>
+        <td>
+          {% if r.status != 'active' %}
+          <form class="inline" method="post" action="{{ url_for('whatsapp_channel_approve', uid=r.user_id) }}">
+            <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+            <button class="btn" type="submit">Approve</button>
+          </form>
+          {% endif %}
+          {% if r.status != 'disabled' %}
+          <form class="inline" method="post" action="{{ url_for('whatsapp_channel_disable', uid=r.user_id) }}">
+            <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+            <button class="btn bad" type="submit">Disable</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not rows %}
+      <tr><td colspan="5" class="note">No WhatsApp channel registrations yet.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

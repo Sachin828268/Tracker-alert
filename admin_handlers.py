@@ -40,6 +40,9 @@ from database import (
     get_approvals_since,
     list_products,
     get_all_products,
+    list_pending_whatsapp_channels,
+    approve_whatsapp_channel,
+    disable_whatsapp_channel,
 )
 from notifications import (
     send_approval_notice,
@@ -469,3 +472,59 @@ async def cmd_broadcast(message: Message, command: CommandObject):
         await asyncio.sleep(0.05)  # stay well under Telegram's rate limits
 
     await message.answer(f"✅ Broadcast done — sent {sent}, failed {failed}.")
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp channel forwarding: /whatsapppending /whatsappapprove /whatsappdisable
+# Per-user, admin-approved (see database.whatsapp_channels + handlers.py's
+# /setwhatsapp). The admin must manually join a user's Channel/Community with
+# their own phone BEFORE approving here — approval here is purely a DB status
+# flip, it does not join anything on the admin's behalf.
+# ---------------------------------------------------------------------------
+
+@router.message(Command("whatsapppending"))
+async def cmd_whatsapppending(message: Message):
+    rows = list_pending_whatsapp_channels()
+    if not rows:
+        await message.answer("📭 No WhatsApp channel registrations awaiting approval.")
+        return
+
+    lines = [f"⏳ <b>Pending WhatsApp channels ({len(rows)})</b>\n"]
+    for row in rows:
+        u = get_user(row["user_id"])
+        lines.append(
+            f"👤 <code>{row['user_id']}</code> {_display_name(u) if u else ''}\n"
+            f"   {row['invite_link']}\n"
+            f"   registered {row['registered_at']}"
+        )
+    lines.append(
+        "\nUse <code>/whatsappapprove &lt;user_id&gt;</code> after joining their "
+        "Channel/Community, or <code>/whatsappdisable &lt;user_id&gt;</code> to reject."
+    )
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("whatsappapprove"))
+async def cmd_whatsappapprove(message: Message, command: CommandObject):
+    if not command.args or not command.args.strip().lstrip("-").isdigit():
+        await message.answer("Usage: <code>/whatsappapprove &lt;user_id&gt;</code>", parse_mode="HTML")
+        return
+    user_id = int(command.args.strip())
+    ok = approve_whatsapp_channel(user_id, message.from_user.id)
+    if ok:
+        await message.answer(f"✅ WhatsApp channel for user {user_id} approved — alerts will now forward there.")
+    else:
+        await message.answer(f"⚠️ No WhatsApp channel registration found for user {user_id}.")
+
+
+@router.message(Command("whatsappdisable"))
+async def cmd_whatsappdisable(message: Message, command: CommandObject):
+    if not command.args or not command.args.strip().lstrip("-").isdigit():
+        await message.answer("Usage: <code>/whatsappdisable &lt;user_id&gt;</code>", parse_mode="HTML")
+        return
+    user_id = int(command.args.strip())
+    ok = disable_whatsapp_channel(user_id)
+    if ok:
+        await message.answer(f"🚫 WhatsApp channel forwarding for user {user_id} disabled.")
+    else:
+        await message.answer(f"⚠️ No WhatsApp channel registration found for user {user_id}.")

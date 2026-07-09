@@ -122,3 +122,18 @@ AFFILIATE_ENABLED_SITES = {
     if s.strip()
 }
 AFFILIATE_ENABLED_SITES.discard("amazon")  # never, regardless of config
+
+# ---------------------------------------------------------------------------
+# WhatsApp channel forwarding (separate whatsapp_forwarder/ service — see
+# that directory's README for deployment. NOT the same process as this bot;
+# Playwright/browser-automation dependencies live entirely over there.)
+# ---------------------------------------------------------------------------
+# Base URL of the whatsapp_forwarder service's internal API (no trailing
+# slash), e.g. "https://whatsapp-forwarder.up.railway.app". Left unset by
+# default — whatsapp_client.py treats an empty value as "feature not
+# configured" and never attempts a request, so the bot behaves identically to
+# today until this is explicitly set.
+WHATSAPP_FORWARDER_URL = os.getenv("WHATSAPP_FORWARDER_URL", "").rstrip("/")
+# Shared secret the bot sends as a Bearer token on every forward request; must
+# match the same value configured on the whatsapp_forwarder service.
+WHATSAPP_FORWARDER_SECRET = os.getenv("WHATSAPP_FORWARDER_SECRET", "")
