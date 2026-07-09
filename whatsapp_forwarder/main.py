@@ -76,6 +76,14 @@ HEADLESS = os.getenv("WHATSAPP_HEADLESS", "true").lower() != "false"
 # risk. Tune via env once live behaviour is observed.
 FORWARD_PACING_SECONDS = float(os.getenv("WHATSAPP_FORWARD_PACING_SECONDS", "12"))
 QR_BOOTSTRAP_TIMEOUT_SECONDS = float(os.getenv("WHATSAPP_QR_TIMEOUT_SECONDS", "600"))
+# WhatsApp Web is a heavy React SPA — domcontentloaded fires long before the
+# QR canvas actually mounts. A first live deploy showed canvas_count=0 AND an
+# empty document.title (normally "WhatsApp") right after navigation, which
+# points at "JS hasn't finished mounting yet" rather than a stale selector.
+# This is a floor wait on top of an explicit networkidle wait (best-effort;
+# WhatsApp Web polls in the background so networkidle may never fully settle
+# — see _goto_whatsapp).
+INITIAL_LOAD_WAIT_SECONDS = float(os.getenv("WHATSAPP_INITIAL_LOAD_WAIT_SECONDS", "10"))
 
 if not FORWARDER_SECRET:
     logger.warning(
@@ -173,6 +181,53 @@ def _first_match(page: Page, selectors: list[str], timeout_ms: int = 5000):
 
 
 # ---------------------------------------------------------------------------
+# Anti-detection: headless Chromium is commonly fingerprinted by sites (the
+# `navigator.webdriver` flag, a missing `window.chrome`, an empty plugins
+# list, a non-standard user-agent string are the classic tells). A live
+# deploy showed an empty document.title and zero canvas elements right after
+# navigating to web.whatsapp.com, which is consistent with the app bundle
+# never mounting at all — worth ruling this out even though it's only one of
+# several possible causes (the other being "just needs more time to load",
+# handled separately via INITIAL_LOAD_WAIT_SECONDS below).
+# ---------------------------------------------------------------------------
+_REALISTIC_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
+_STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+window.chrome = window.chrome || { runtime: {} };
+Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+const originalQuery = window.navigator.permissions && window.navigator.permissions.query;
+if (originalQuery) {
+    window.navigator.permissions.query = (parameters) => (
+        parameters.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : originalQuery(parameters)
+    );
+}
+"""
+
+
+def _goto_whatsapp(page: Page) -> None:
+    """Navigate to WhatsApp Web and give its React bundle real time to mount
+    before anything tries to find the QR canvas. domcontentloaded alone fires
+    long before the app renders anything — a first live deploy hit
+    canvas_count=0 with an empty document.title (normally "WhatsApp") right
+    after a bare domcontentloaded goto, which points at "checked too early"
+    as at least part of the problem."""
+    page.goto("https://web.whatsapp.com", wait_until="domcontentloaded")
+    try:
+        page.wait_for_load_state("networkidle", timeout=15000)
+    except PlaywrightTimeoutError:
+        # WhatsApp Web polls in the background even once loaded, so
+        # networkidle may never fully settle — not itself an error.
+        logger.info("[login] networkidle wait timed out (page may still be polling) — continuing")
+    time.sleep(INITIAL_LOAD_WAIT_SECONDS)
+
+
+# ---------------------------------------------------------------------------
 # Worker: owns the ONE Playwright browser/page. Everything that touches
 # `page` runs on this worker's own thread — Playwright's sync API is not
 # thread-safe, so Flask request handlers only ever touch the thread-safe
@@ -202,11 +257,15 @@ class WhatsAppWorker:
             context = pw.chromium.launch_persistent_context(
                 PROFILE_DIR,
                 headless=HEADLESS,
+                viewport={"width": 1280, "height": 800},
+                user_agent=_REALISTIC_USER_AGENT,
+                locale="en-US",
                 args=["--disable-blink-features=AutomationControlled"],
             )
+            context.add_init_script(_STEALTH_INIT_SCRIPT)
             page = context.pages[0] if context.pages else context.new_page()
             self._page = page
-            page.goto("https://web.whatsapp.com", wait_until="domcontentloaded")
+            _goto_whatsapp(page)
 
             self._ensure_logged_in()
 
@@ -236,13 +295,15 @@ class WhatsAppWorker:
         loc, _ = _first_match(page, _LOGGED_IN_SELECTORS, timeout_ms=3000)
         self.state.logged_in = loc is not None
 
-    def _diagnostic_snapshot(self, context: str) -> None:
+    def _diagnostic_snapshot(self, context: str):
         """Log enough about current page state to diagnose a selector miss
         without needing shell/volume access to the Railway container: page
-        title, URL, and how many <canvas> elements exist at all (0 means the
+        title, URL, how many <canvas> elements exist at all (0 means the
         selectors aren't just stale — WhatsApp isn't even rendering a QR
-        canvas, e.g. a cookie-consent popup, an "unsupported browser"
-        warning, or an automation-detection block)."""
+        canvas), and navigator.webdriver (True is a strong signal the page
+        detected automation before the real UI ever mounted). Returns the
+        canvas count (int) so the caller can decide whether to escalate to a
+        full-page screenshot immediately rather than waiting."""
         page = self._page
         try:
             title = page.title()
@@ -256,9 +317,57 @@ class WhatsAppWorker:
             canvas_count = page.locator("canvas").count()
         except Exception as exc:
             canvas_count = f"<error: {exc}>"
+        try:
+            webdriver_flag = page.evaluate("navigator.webdriver")
+        except Exception as exc:
+            webdriver_flag = f"<error: {exc}>"
         logger.warning(
-            f"[login] {context} — title={title!r} url={url!r} canvas_count={canvas_count}"
+            f"[login] {context} — title={title!r} url={url!r} "
+            f"canvas_count={canvas_count} navigator.webdriver={webdriver_flag}"
         )
+        return canvas_count
+
+    def _log_body_snapshot(self) -> None:
+        """Dump enough of the real page structure to tell "still loading"
+        apart from "showing something unexpected" (an error message, a
+        captcha, a blocked-browser warning) — sent to Telegram as text too,
+        since a screenshot of a blank/white page alone doesn't explain WHY
+        it's blank. Called once per bootstrap attempt (paired with
+        _send_full_page_fallback, same dedup guard) rather than on every
+        single miss, to avoid repeating the same diagnosis every ~30s."""
+        page = self._page
+        try:
+            info = page.evaluate(
+                """() => {
+                    const body = document.body;
+                    if (!body) return {hasBody: false};
+                    const children = Array.from(body.children).map(el => ({
+                        tag: el.tagName,
+                        id: el.id,
+                        className: (el.className || '').toString(),
+                    }));
+                    return {
+                        hasBody: true,
+                        readyState: document.readyState,
+                        bodyChildCount: body.children.length,
+                        children: children,
+                        bodyText: (body.innerText || '').slice(0, 500),
+                        bodyHtml: body.innerHTML.slice(0, 4000),
+                    };
+                }"""
+            )
+        except Exception as exc:
+            logger.error(f"[login] body snapshot evaluate failed: {exc}")
+            return
+
+        logger.warning(f"[login] body snapshot: {info}")
+        summary = (
+            f"readyState={info.get('readyState')}\n"
+            f"bodyChildCount={info.get('bodyChildCount')}\n"
+            f"children={info.get('children')}\n\n"
+            f"text: {info.get('bodyText', '')!r}"
+        )
+        _tg_send_text(f"🔍 canvas_count=0 — page body snapshot:\n{summary}"[:4000])
 
     def _send_full_page_fallback(self) -> None:
         """Last resort when no canvas (QR-specific or generic) can be found
@@ -305,21 +414,30 @@ class WhatsAppWorker:
             qr_loc, sel = _first_match(page, _QR_CANVAS_SELECTORS, timeout_ms=3000)
             if qr_loc is None:
                 consecutive_misses += 1
-                self._diagnostic_snapshot(
+                canvas_count = self._diagnostic_snapshot(
                     f"QR canvas not found with any known selector (miss #{consecutive_misses})"
                 )
-                if consecutive_misses == 3 and not sent_full_page_fallback:
+                # canvas_count == 0 means this isn't a stale-selector problem
+                # at all — nothing resembling a QR ever rendered — so escalate
+                # to a full-page screenshot immediately rather than waiting
+                # for 3 misses (~30s+) to find out something is more seriously
+                # wrong (still loading, blocked, unexpected page).
+                urgent = canvas_count == 0
+                if not sent_full_page_fallback and (urgent or consecutive_misses >= 3):
+                    if urgent:
+                        self._log_body_snapshot()
                     self._send_full_page_fallback()
                     sent_full_page_fallback = True
                 # Reload periodically rather than every single miss — reloading
                 # every 3s never gives a slow-rendering page a chance to finish,
                 # and constant reloads would themselves explain a permanent
                 # "not found" (the QR barely has time to render before the next
-                # goto tears it down).
+                # goto tears it down). Reload goes through _goto_whatsapp so it
+                # gets the same networkidle + floor wait as the initial load.
                 if consecutive_misses % 10 == 0:
                     logger.info("[login] reloading page after repeated misses")
                     try:
-                        page.goto("https://web.whatsapp.com", wait_until="domcontentloaded")
+                        _goto_whatsapp(page)
                     except Exception as exc:
                         logger.error(f"[login] reload failed: {exc}")
                     sent_full_page_fallback = False  # allow one fresh fallback shot post-reload

@@ -85,11 +85,28 @@ structure, but WhatsApp changes its DOM/class names often and these are
 site.
 
 If a step fails, the worker:
-- logs exactly which selector list it tried and that none matched,
+- logs exactly which selector list it tried and that none matched, plus
+  page title, URL, a live `<canvas>` element count, and
+  `navigator.webdriver` on every miss (Railway logs),
 - saves a screenshot of the page at the moment of failure, and
 - sends that screenshot to you on Telegram automatically (same as the QR
   bootstrap), so you can see exactly what the page looked like without
   needing shell/volume access to the Railway container.
+
+During QR bootstrap specifically, a `canvas_count=0` miss (nothing
+resembling a QR ever rendered — not just a wrong selector) escalates
+immediately: it dumps the page's actual `<body>` structure/text to both
+the logs and a Telegram message, then sends the full-page screenshot,
+all on the very first miss rather than waiting. It also waits (~10s,
+`WHATSAPP_INITIAL_LOAD_WAIT_SECONDS`) plus a best-effort network-idle
+check after every navigation before checking for the QR at all, since
+WhatsApp Web is a heavy React app that renders well after
+`domcontentloaded` fires — and applies a few standard anti-automation-
+detection measures (a realistic desktop Chrome user-agent, a normal
+viewport size, and patches for the usual headless tells:
+`navigator.webdriver`, `window.chrome`, `navigator.plugins`,
+`navigator.languages`) in case WhatsApp is refusing to render its real
+UI for a detected-automation session.
 
 To fix a broken selector: open `web.whatsapp.com` yourself in a normal
 browser, inspect the relevant element, and add/replace the matching entry
