@@ -1,0 +1,123 @@
+# playwright_scraper
+
+Standalone pilot: a self-hosted Playwright + Chromium scraper for **iQOO and
+Vivo only**, to test replacing their current Scrape.do `render=true` checks
+(which burn render credits at scale) with a self-hosted equivalent behind an
+optional metered residential proxy.
+
+**Not wired into the main bot.** The main bot's existing `checkers/iqoo.py`
+and `checkers/vivo.py` (Scrape.do-based) are completely untouched and remain
+live in production. This service exists purely for you to test standalone —
+hit it directly, compare its results against real stock status, and decide
+whether/how to integrate it later. If this service crashes, gets blocked by
+the target site, or a proxy runs dry, nothing about the main bot changes —
+nothing in the main bot calls this service (yet).
+
+## Deploying on Railway
+
+Same pattern as `whatsapp_forwarder/`:
+
+1. **New Service → GitHub Repo** → same repo, **Root Directory**
+   `playwright_scraper/`.
+2. **Builder: Dockerfile** (ships its own Dockerfile based on Playwright's
+   official image — has Chromium and every system dependency already
+   installed; Railway's default nixpacks builder does not).
+3. No volume needed — this service is fully stateless.
+4. Environment variables (all optional, sensible defaults):
+   - `MAX_CONCURRENT_CHECKS` (default `2`) — how many browser instances may
+     run at once. Each headless Chromium instance can use 150-300MB+ RAM;
+     this bounds total memory use under concurrent load. Requests beyond
+     the limit queue for a free slot (up to `SLOT_WAIT_TIMEOUT_SECONDS`,
+     default 60s) rather than spawning unbounded browsers.
+   - `MAX_RETRIES` (default `3`) — retry attempts before giving up and
+     returning a "check failed" result (`in_stock: null`), never a guessed
+     `false`.
+   - `RETRY_DELAY_SECONDS` (default `2`) — pause between retry attempts.
+   - `NAV_TIMEOUT_MS` (default `20000`) — page navigation timeout.
+   - `SIGNAL_WAIT_TIMEOUT_MS` (default `8000`) — how long to wait for the
+     primary stock signal (a JSON-LD `<script>` tag) to appear before
+     proceeding anyway with whatever HTML rendered (fallback signals still
+     run against it).
+   - `PLAYWRIGHT_HEADLESS` (default `true`) — leave as default on Railway.
+   - `PROXY_HOST`, `PROXY_PORT`, `PROXY_USERNAME`, `PROXY_PASSWORD` —
+     Webshare (or any HTTP-auth proxy) credentials. **All optional** — with
+     `PROXY_HOST`/`PROXY_PORT` unset, requests go out directly, so you can
+     test this locally or on Railway before buying a proxy plan.
+
+## HTTP surface
+
+```
+POST /check-stock
+Body: {"url": "<product url>", "store": "iqoo" | "vivo"}
+Response: {
+  "url": "...", "store": "iqoo",
+  "in_stock": true | false | null,   // null = check failed, see "signal"
+  "signal": "JSON-LD offers.availability='https://schema.org/InStock'",
+  "attempts": 1
+}
+```
+
+```
+GET /health
+Response: {"ok": true, "max_concurrent_checks": 2, "proxy_configured": false,
+           "supported_stores": ["iqoo", "vivo"]}
+```
+
+Example:
+```bash
+curl -X POST https://<your-service>.up.railway.app/check-stock \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://mshop.iqoo.com/in/product/...", "store": "iqoo"}'
+```
+
+## Bandwidth optimization
+
+Every request is intercepted (`page.route("**/*", ...)`) and only
+`document`, `script`, `xhr`, and `fetch` resource types are allowed through
+— images, fonts, stylesheets, and media are aborted before they download.
+A product page's images alone can be several MB; since only `page.content()`
+(the rendered DOM) is ever read, none of that is needed. Each check logs how
+many requests were allowed vs. blocked, so the actual savings are visible in
+the logs rather than assumed.
+
+## Stock detection — ported, not freshly reverse-engineered
+
+This sandbox has no live network access to inspect real iQOO/Vivo product
+pages. Rather than guess new selectors blind, `check_iqoo_vivo_stock()` in
+`main.py` is **ported verbatim** from `checkers/iqoo.py` and
+`checkers/vivo.py` in the main bot — both already probe-confirmed reliable
+(a prior diagnostic pass tested real in-stock and out-of-stock URLs for
+both stores): JSON-LD `offers.availability` is the primary signal, an
+embedded-JSON stock key is a fallback, explicit "out of stock"/"sold out"
+text is a last resort.
+
+**This needs live verification once deployed** — the signal was proven
+reliable when fetched via Scrape.do's `render=true`; it should behave the
+same via Playwright (both fully execute the page's JS before reading the
+DOM), but that's an assumption, not a confirmed fact from this environment.
+Test both an in-stock and an out-of-stock URL for each store and compare
+`/check-stock`'s result + `signal` field against ground truth before trusting
+it for anything real.
+
+One deliberate difference from the main bot's checkers: `checkers/iqoo.py`/
+`vivo.py` default to `False` (out of stock) when no signal is found at all,
+reasoning that a missed alert is safer than a false one in production. This
+pilot instead returns `in_stock: null` ("check failed") in that case — since
+this is a service being actively tuned, an inconclusive read should surface
+for investigation rather than silently reporting "out of stock" as if it
+were confident.
+
+## Local testing (no proxy, no real site — HTTP layer + logic only)
+
+```bash
+cd playwright_scraper
+pip install -r requirements.txt
+python main.py
+# in another terminal:
+curl localhost:8080/health
+```
+
+For end-to-end testing against real iQOO/Vivo URLs, deploy to Railway (or
+run locally with a real Chromium + network access) and hit `/check-stock`
+directly with real product URLs — I cannot do this from the sandbox that
+built this service.
