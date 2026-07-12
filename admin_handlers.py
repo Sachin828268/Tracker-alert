@@ -631,16 +631,21 @@ async def cmd_debugoneplus(message: Message, command: CommandObject):
 # ---------------------------------------------------------------------------
 # TEMPORARY debug command for tuning checkers/reliancedigital.py against
 # real product pages — same pattern as /debugoneplus above, same
-# waitUntil/customWait render settings (proven to fix OnePlus's incomplete
-# rendering). NOT wired into CHECKER_MAP or the regular check cycle —
-# RelianceDigital's live check_stock fetch is completely untouched by this.
-# Safe to delete once no longer needed.
+# waitUntil render setting (proven to fix OnePlus's incomplete rendering).
+# NOT wired into CHECKER_MAP or the regular check cycle — RelianceDigital's
+# live check_stock fetch is completely untouched by this. Safe to delete
+# once no longer needed.
 # ---------------------------------------------------------------------------
 _DEBUG_RELIANCE_ADMIN_ID = 5004721766  # same hardcoded restriction as
 # /debugoneplus, on top of the router's own ADMIN_USER_ID filter — this
 # fetches an arbitrary caller-supplied URL via Scrape.do (spends credits).
 _DEBUG_RELIANCE_WAIT_UNTIL = "networkidle0"
-_DEBUG_RELIANCE_CUSTOM_WAIT_MS = 4000
+# Own constant, independent of _DEBUG_ONEPLUS_CUSTOM_WAIT_MS — each debug
+# command already passes custom_wait_ms as a plain per-call argument to
+# build_scraper_url(), so this is already a site-specific override with no
+# further plumbing needed. Raised from 4000 to 8000: RelianceDigital pages
+# needed longer to finish rendering than OnePlus's proven 4000ms.
+_DEBUG_RELIANCE_CUSTOM_WAIT_MS = 8000
 
 
 @router.message(Command("debugreliance"))
