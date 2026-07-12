@@ -15,16 +15,27 @@ gets blocked, or a proxy runs out of quota, the main bot is unaffected — it
 simply isn't calling this service (nothing does, yet).
 
 HTTP surface:
-  POST /check-stock  Body: {"url": str, "store": "iqoo"|"vivo"}. Returns
-                      {"url", "store", "in_stock": bool|None, "signal": str,
-                      "attempts": int}. in_stock is None ("check failed")
-                      when no conclusive signal was found after retrying —
-                      NEVER a guessed False, unlike the main bot's own
-                      checkers (deliberate: this is a pilot being tuned, an
-                      inconclusive read should surface for investigation,
-                      not silently default to "out of stock").
-  GET  /health        Unauthenticated: {"ok", "max_concurrent_checks",
-                      "proxy_configured", "supported_stores"}.
+  POST /check-stock    Body: {"url": str, "store": "iqoo"|"vivo"}. Returns
+                        {"url", "store", "in_stock": bool|None, "signal": str,
+                        "attempts": int}. in_stock is None ("check failed")
+                        when no conclusive signal was found after retrying —
+                        NEVER a guessed False, unlike the main bot's own
+                        checkers (deliberate: this is a pilot being tuned, an
+                        inconclusive read should surface for investigation,
+                        not silently default to "out of stock").
+  POST /debug-network  Body: {"url": str, "pincode": str (optional, default
+                        "110001")}. Applies pincode as a cookie (best-effort
+                        — see _capture_network_calls), loads the page, and
+                        records every XHR/fetch response whose URL contains
+                        a serviceability/delivery/pincode/availability/
+                        stock/fulfillment keyword. Returns {"url", "pincode",
+                        "matched_requests": [{"url", "method", "status",
+                        "body"}...], "total_requests_seen", "matched_count"}.
+                        For admin diagnostic use (e.g. RelianceDigital's
+                        /debugreliance) — hit directly, no auth (matches
+                        /check-stock; this whole service has none).
+  GET  /health         Unauthenticated: {"ok", "max_concurrent_checks",
+                        "proxy_configured", "supported_stores"}.
 
 Stock-detection logic for iqoo/vivo (check_iqoo_vivo_stock, _OOS_PATTERNS,
 _offer_availability) is PORTED from checkers/iqoo.py and checkers/vivo.py —
@@ -41,6 +52,7 @@ import logging
 import os
 import threading
 import time
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify, request
@@ -80,6 +92,19 @@ NAV_TIMEOUT_MS = int(os.getenv("NAV_TIMEOUT_MS", "20000"))
 SIGNAL_WAIT_TIMEOUT_MS = int(os.getenv("SIGNAL_WAIT_TIMEOUT_MS", "8000"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 RETRY_DELAY_SECONDS = float(os.getenv("RETRY_DELAY_SECONDS", "2"))
+
+# /debug-network: default pincode applied when the caller doesn't specify
+# one — an arbitrary real Indian pincode, not tied to any particular store.
+DEFAULT_DEBUG_PINCODE = os.getenv("DEBUG_NETWORK_DEFAULT_PINCODE", "110001")
+# Substrings (case-insensitive) of a response URL worth capturing — these
+# are the endpoint-name patterns a serviceability/stock-by-pincode API call
+# would plausibly contain.
+_NETWORK_CAPTURE_KEYWORDS = (
+    "serviceability", "delivery", "pincode", "availability", "stock", "fulfillment",
+)
+# Cap on how much of each matched response body is kept, so one huge JSON
+# blob can't blow up the HTTP response back to the caller.
+_MAX_BODY_CHARS = 5000
 
 # Webshare (or any HTTP-auth) proxy — entirely optional. Unset PROXY_HOST
 # means "no proxy", so this runs directly for local testing before buying a
@@ -292,6 +317,98 @@ def _fetch_and_check(url: str, store: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# /debug-network: record XHR/fetch calls made while loading a page, filtered
+# to serviceability/stock-by-pincode-looking endpoints. For admin diagnostic
+# use (RelianceDigital's stock signal appears to live behind a pincode-
+# gated API call rather than in the page's own embedded JSON — see
+# admin_handlers.py's /debugreliance on the main bot side).
+# ---------------------------------------------------------------------------
+
+def _capture_network_calls(url: str, pincode: str) -> dict:
+    """Launch an isolated browser, apply `pincode` as a cookie, load `url`,
+    and record every XHR/fetch response whose URL contains one of
+    _NETWORK_CAPTURE_KEYWORDS.
+
+    The cookie is a best-effort guess at how pincode selection works on the
+    target site — this sandbox has no live network access to confirm
+    RelianceDigital's actual mechanism (cookie vs. localStorage vs. a UI
+    widget the user has to type into and submit). If it turns out a cookie
+    alone doesn't trigger the serviceability call, that itself is useful
+    diagnostic information (matched_count will be 0 despite total_requests_
+    seen being nonzero) — report back what's actually observed so this can
+    be adjusted, same as every other live-tuning step this pilot has needed.
+
+    Bounded by the same _check_semaphore /check-stock uses, so total
+    concurrent browser instances across both endpoints stays capped."""
+    acquired = _check_semaphore.acquire(timeout=SLOT_WAIT_TIMEOUT_SECONDS)
+    if not acquired:
+        raise RuntimeError(
+            f"too many concurrent checks (max {MAX_CONCURRENT_CHECKS}) — "
+            f"timed out after {SLOT_WAIT_TIMEOUT_SECONDS}s waiting for a free slot"
+        )
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=HEADLESS, proxy=_proxy_config())
+            try:
+                context = browser.new_context()
+                domain = urlparse(url).netloc
+                if domain:
+                    context.add_cookies([{
+                        "name": "pincode", "value": pincode,
+                        "domain": domain, "path": "/",
+                    }])
+
+                page = context.new_page()
+                stats: dict = {}
+                page.route("**/*", _make_resource_blocker(stats))
+
+                matched: list[dict] = []
+                total_seen = {"n": 0}
+
+                def _on_response(response):
+                    total_seen["n"] += 1
+                    url_lower = response.url.lower()
+                    if not any(kw in url_lower for kw in _NETWORK_CAPTURE_KEYWORDS):
+                        return
+                    try:
+                        body = response.text()
+                    except Exception as exc:
+                        body = f"<could not read response body: {exc}>"
+                    if body and len(body) > _MAX_BODY_CHARS:
+                        body = body[:_MAX_BODY_CHARS] + f"...(truncated, {len(body)} chars total)"
+                    matched.append({
+                        "url": response.url,
+                        "method": response.request.method,
+                        "status": response.status,
+                        "body": body,
+                    })
+
+                page.on("response", _on_response)
+                page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=SIGNAL_WAIT_TIMEOUT_MS)
+                except PlaywrightTimeoutError:
+                    logger.info(
+                        f"[debug-network] networkidle wait timed out for {url} — "
+                        f"returning whatever was captured so far"
+                    )
+
+                logger.info(
+                    f"[debug-network] {url}: {total_seen['n']} response(s) seen, "
+                    f"{len(matched)} matched the capture keywords"
+                )
+                return {
+                    "matched_requests": matched,
+                    "total_requests_seen": total_seen["n"],
+                    "matched_count": len(matched),
+                }
+            finally:
+                browser.close()
+    finally:
+        _check_semaphore.release()
+
+
+# ---------------------------------------------------------------------------
 # Flask app
 # ---------------------------------------------------------------------------
 
@@ -313,6 +430,22 @@ def create_app() -> Flask:
 
         result = _fetch_and_check(url, store)
         return jsonify({"url": url, "store": store, **result}), 200
+
+    @app.route("/debug-network", methods=["POST"])
+    def debug_network():
+        data = request.get_json(silent=True) or {}
+        url = (data.get("url") or "").strip()
+        pincode = (data.get("pincode") or "").strip() or DEFAULT_DEBUG_PINCODE
+        if not url:
+            return jsonify({"error": "url is required"}), 400
+
+        try:
+            result = _capture_network_calls(url, pincode)
+        except Exception as exc:
+            logger.error(f"[debug-network] failed for {url}: {exc}")
+            return jsonify({"url": url, "pincode": pincode, "error": str(exc)}), 502
+
+        return jsonify({"url": url, "pincode": pincode, **result}), 200
 
     @app.route("/health", methods=["GET"])
     def health():

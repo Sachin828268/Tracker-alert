@@ -58,16 +58,56 @@ Response: {
 ```
 
 ```
+POST /debug-network
+Body: {"url": "<product url>", "pincode": "110001"}   // pincode optional
+Response: {
+  "url": "...", "pincode": "110001",
+  "matched_requests": [
+    {"url": "https://.../api/serviceability?pin=110001", "method": "GET",
+     "status": 200, "body": "{\"serviceable\":true,...}"},
+    ...
+  ],
+  "total_requests_seen": 12,   // every XHR/fetch response observed, for context
+  "matched_count": 2           // how many matched the capture keywords
+}
+```
+No auth on this endpoint (matches `/check-stock` — this whole service has
+none, by design, since it's an internal pilot). Applies `pincode` as a
+cookie named `pincode` on the target domain before navigating, then records
+every XHR/fetch response whose URL contains `serviceability`, `delivery`,
+`pincode`, `availability`, `stock`, or `fulfillment` (case-insensitive).
+Built for `/debugreliance` on the main-bot side (RelianceDigital's stock
+signal appears to live behind a pincode-gated API call rather than in the
+page's own embedded JSON), but works against any URL.
+
+**The pincode-as-cookie approach is a best-effort guess**, not a confirmed
+mechanism — this sandbox has no live network access to check how
+RelianceDigital's frontend actually reads a selected pincode (a cookie is
+the most common convention, matching what the main bot's own quick-commerce
+checkers already do, but it could instead be `localStorage`, a request
+header, or something only set after a UI interaction like typing into a
+pincode widget and clicking a button). If `matched_count` comes back 0
+despite `total_requests_seen` being nonzero, that itself is the useful
+signal — it means the serviceability call either didn't fire at all (cookie
+isn't how this site reads it) or fired with a URL/keyword this capture list
+doesn't recognize. Report back what's actually observed so the approach can
+be adjusted, same as every other live-tuning step this pilot has needed.
+
+```
 GET /health
 Response: {"ok": true, "max_concurrent_checks": 2, "proxy_configured": false,
            "supported_stores": ["iqoo", "vivo"]}
 ```
 
-Example:
+Examples:
 ```bash
 curl -X POST https://<your-service>.up.railway.app/check-stock \
   -H "Content-Type: application/json" \
   -d '{"url": "https://mshop.iqoo.com/in/product/...", "store": "iqoo"}'
+
+curl -X POST https://<your-service>.up.railway.app/debug-network \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://www.reliancedigital.in/...", "pincode": "110001"}'
 ```
 
 ## Bandwidth optimization
@@ -78,7 +118,9 @@ Every request is intercepted (`page.route("**/*", ...)`) and only
 A product page's images alone can be several MB; since only `page.content()`
 (the rendered DOM) is ever read, none of that is needed. Each check logs how
 many requests were allowed vs. blocked, so the actual savings are visible in
-the logs rather than assumed.
+the logs rather than assumed. `/debug-network` reuses this same filter —
+`xhr`/`fetch` responses are exactly what it needs to inspect, so nothing
+extra had to be allowed through for it.
 
 ## Stock detection — ported, not freshly reverse-engineered
 
