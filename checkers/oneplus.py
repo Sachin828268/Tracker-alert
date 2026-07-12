@@ -9,10 +9,10 @@ NEEDS_JS = True
 
 # Deliberately ONLY this one keyword, checked against the page's visible
 # text (HTML tags/scripts stripped) — no JSON-LD, no embedded JSON, no
-# button/class scanning. Replaces the earlier "notify me"/"out of stock"
-# keyword pair: OnePlus shows "Priority Delivery" specifically on in-stock
-# listings, so presence (not absence of a negative phrase) is now the signal.
-_IN_STOCK_KEYWORD = "priority delivery"
+# button/class scanning. Replaces the earlier "priority delivery" keyword
+# (and before that, "notify me"/"out of stock"): "Buy now" is present when
+# the item can actually be purchased, so presence is the in-stock signal.
+_IN_STOCK_KEYWORD = "buy now"
 
 
 def _visible_text(html: str) -> str:

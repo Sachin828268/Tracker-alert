@@ -157,6 +157,15 @@ _JS_SITES = {
     "oneplus", "tataneu", "vivo", "iqoo",
 }
 
+# OnePlus renders incompletely under a plain render=true (confirmed via the
+# /debugoneplus admin command — the page's JS/XHR activity hadn't settled
+# by the time Scrape.do captured it). waitUntil="networkidle0" plus a fixed
+# customWait buffer fixes this; scoped to oneplus only via these per-site
+# maps (build_scraper_url's wait_until/custom_wait_ms are no-ops for every
+# other site, which don't appear here and so get None → unchanged requests).
+_SITE_WAIT_UNTIL = {"oneplus": "networkidle0"}
+_SITE_CUSTOM_WAIT_MS = {"oneplus": 4000}
+
 # No sites currently support pincode-specific stock via simple cookie injection.
 # Blinkit was here previously (`pincode=<value>`) but real captured Blinkit
 # traffic confirms the backend does not read a cookie literally named "pincode"
@@ -278,7 +287,13 @@ async def check_stock(
             )
 
     try:
-        scraper_url = build_scraper_url(url, render_js=site in _JS_SITES, set_cookies=set_cookies)
+        scraper_url = build_scraper_url(
+            url,
+            render_js=site in _JS_SITES,
+            set_cookies=set_cookies,
+            wait_until=_SITE_WAIT_UNTIL.get(site),
+            custom_wait_ms=_SITE_CUSTOM_WAIT_MS.get(site),
+        )
         logger.info(f"[{site}] setCookies={set_cookies!r} render_js={site in _JS_SITES}")
         logger.info(f"[{site}] scraper_url (truncated)={scraper_url[:120]!r}")
 
