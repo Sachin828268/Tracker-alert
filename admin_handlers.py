@@ -626,3 +626,61 @@ async def cmd_debugoneplus(message: Message, command: CommandObject):
     _CHUNK_SIZE = 4000
     for i in range(0, len(snippet), _CHUNK_SIZE):
         await message.answer(snippet[i:i + _CHUNK_SIZE])
+
+
+# ---------------------------------------------------------------------------
+# TEMPORARY debug command for tuning checkers/reliancedigital.py against
+# real product pages — same pattern as /debugoneplus above, same
+# waitUntil/customWait render settings (proven to fix OnePlus's incomplete
+# rendering). NOT wired into CHECKER_MAP or the regular check cycle —
+# RelianceDigital's live check_stock fetch is completely untouched by this.
+# Safe to delete once no longer needed.
+# ---------------------------------------------------------------------------
+_DEBUG_RELIANCE_ADMIN_ID = 5004721766  # same hardcoded restriction as
+# /debugoneplus, on top of the router's own ADMIN_USER_ID filter — this
+# fetches an arbitrary caller-supplied URL via Scrape.do (spends credits).
+_DEBUG_RELIANCE_WAIT_UNTIL = "networkidle0"
+_DEBUG_RELIANCE_CUSTOM_WAIT_MS = 4000
+
+
+@router.message(Command("debugreliance"))
+async def cmd_debugreliance(message: Message, command: CommandObject):
+    if message.from_user.id != _DEBUG_RELIANCE_ADMIN_ID:
+        return
+    if not command.args:
+        await message.answer("Usage: <code>/debugreliance &lt;url&gt;</code>", parse_mode="HTML")
+        return
+
+    url = command.args.strip()
+    await message.answer(
+        f"🔍 Fetching (render=true, waitUntil={_DEBUG_RELIANCE_WAIT_UNTIL}, "
+        f"customWait={_DEBUG_RELIANCE_CUSTOM_WAIT_MS}ms): {url}"
+    )
+
+    try:
+        scraper_url = build_scraper_url(
+            url,
+            render_js=True,
+            wait_until=_DEBUG_RELIANCE_WAIT_UNTIL,
+            custom_wait_ms=_DEBUG_RELIANCE_CUSTOM_WAIT_MS,
+        )
+        async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=60.0) as client:
+            resp = await client.get(scraper_url)
+            resp.raise_for_status()
+        html = resp.text
+    except Exception as exc:
+        await message.answer(f"⚠️ Fetch failed: {exc}")
+        return
+
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    visible_text = soup.get_text(" ", strip=True)
+    snippet = visible_text[:3000]
+
+    await message.answer(
+        f"📄 Visible text: {len(visible_text)} chars total, showing first {len(snippet)}."
+    )
+    _CHUNK_SIZE = 4000
+    for i in range(0, len(snippet), _CHUNK_SIZE):
+        await message.answer(snippet[i:i + _CHUNK_SIZE])
