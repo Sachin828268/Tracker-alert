@@ -10,11 +10,13 @@ register_admin_commands in bot.py).
 """
 
 import asyncio
+import json
 import logging
 import re
 from calendar import monthrange
 from collections import Counter
 from datetime import datetime
+from urllib.parse import urlparse
 
 import httpx
 from aiogram import Router, F
@@ -685,13 +687,6 @@ _RELIANCE_ANTIBOT_PHRASE = "Please Update the Page in Theme"
 # flag without needing to guess the exact key name up front.
 _JSON_STATE_KEYWORDS = ("stock", "availab", "instock", "sellable", "buyable")
 
-# "key": value — value is a quoted string, a number, true/false/null, or the
-# opening brace/bracket of a nested object/array (not expanded further; see
-# _find_matching_json_keys). Regex-based rather than a full JSON parse so a
-# single malformed/truncated blob can't take down the whole scan — each
-# match is independent of the blob's overall validity.
-_JSON_KV_RE = re.compile(r'"([^"]+)"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|null|[\{\[])')
-
 
 def _extract_balanced_json(text: str, start_idx: int) -> str | None:
     """Starting from start_idx, skip to the first '{' or '[' and return the
@@ -767,27 +762,133 @@ def _find_embedded_json_blobs(html: str) -> list[tuple[str, str]]:
     return blobs
 
 
-def _find_matching_json_keys(json_text: str) -> list[tuple[str, str]]:
-    """Scan json_text for "key": value pairs whose key matches
-    _JSON_STATE_KEYWORDS (case-insensitive substring). Nested object/array
-    values are reported as-is (opening bracket only, not expanded) rather
-    than risking an expensive/incorrect deep walk of a blob that might not
-    even be fully valid JSON."""
-    matches = []
-    for m in _JSON_KV_RE.finditer(json_text):
-        key = m.group(1)
-        if any(kw in key.lower() for kw in _JSON_STATE_KEYWORDS):
-            value = m.group(2)
-            if value in ("{", "["):
-                value = f"{value}...(nested, not expanded)"
-            matches.append((key, value))
-    return matches
+def _extract_candidate_product_ids(url: str) -> list[str]:
+    """Best-effort candidate product ID/SKU values pulled from the URL —
+    the exact convention isn't confirmed for RelianceDigital's real product
+    URLs from this sandbox, so this returns several candidates rather than
+    committing to one: the path segment right after a literal "/p/" (a
+    common e-commerce convention), the last non-empty path segment, and any
+    standalone alphanumeric token of 6+ characters containing a digit found
+    anywhere in the path. Query string is ignored (rarely carries product
+    identity). De-duplicated, order preserved."""
+    path = urlparse(url).path
+    segments = [s for s in path.split("/") if s]
+    candidates = []
+
+    for i, seg in enumerate(segments):
+        if seg.lower() == "p" and i + 1 < len(segments):
+            candidates.append(segments[i + 1])
+    if segments:
+        candidates.append(segments[-1])
+    for seg in segments:
+        for token in re.findall(r"[A-Za-z0-9]+", seg):
+            if len(token) >= 6 and any(c.isdigit() for c in token):
+                candidates.append(token)
+
+    seen = set()
+    out = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
 
 
-async def _report_embedded_json_signals(message: Message, label: str, html: str) -> None:
-    """Report every matching key found in any embedded JSON/state blob in
-    the raw HTML — or explicitly that none was found, so it's clear the
-    stock signal (if any) lives somewhere else on the page."""
+def _find_product_object(data, candidate_ids: list[str], path: str = "", substring_ok: bool = False):
+    """Recursively walk a parsed JSON value looking for a dict that has one
+    of candidate_ids as a direct VALUE (not key) among its own key:value
+    pairs — i.e. that dict IS the product's object, with the matching ID as
+    a sibling to fields like sellable/is_available. A dict's own values are
+    checked before recursing into its children, so the shallowest/most
+    specific containing object wins (depth-first). With substring_ok=False
+    (the default, tried first by the caller) only an exact string match
+    counts, to avoid matching an unrelated object whose ID merely overlaps
+    a candidate — e.g. a "related products" list. Returns
+    (path_to_dict, the_dict) for the first match, or None."""
+    if isinstance(data, dict):
+        for value in data.values():
+            if isinstance(value, bool) or not isinstance(value, (str, int)):
+                continue
+            value_str = str(value)
+            for cid in candidate_ids:
+                if value_str == cid:
+                    return path, data
+                if substring_ok and len(cid) >= 6 and (cid in value_str or value_str in cid):
+                    return path, data
+        for key, value in data.items():
+            child_path = f"{path}.{key}" if path else key
+            result = _find_product_object(value, candidate_ids, child_path, substring_ok)
+            if result:
+                return result
+    elif isinstance(data, list):
+        for i, item in enumerate(data):
+            result = _find_product_object(item, candidate_ids, f"{path}[{i}]", substring_ok)
+            if result:
+                return result
+    return None
+
+
+def _find_stock_keys_within(data, base_path: str) -> list[tuple[str, object]]:
+    """Recursively search WITHIN data (already scoped to just the matched
+    product's own object/subtree — NOT the whole JSON document) for any key
+    matching _JSON_STATE_KEYWORDS, returning (full_path, value) pairs
+    rooted at base_path — e.g. base_path="data.product" plus a nested
+    "variants[0].sellable" match yields "data.product.variants[0].sellable"."""
+    results: list[tuple[str, object]] = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                child_path = f"{path}.{k}" if path else k
+                if any(kw in k.lower() for kw in _JSON_STATE_KEYWORDS):
+                    results.append((child_path, v))
+                walk(v, child_path)
+        elif isinstance(node, list):
+            for i, item in enumerate(node):
+                walk(item, f"{path}[{i}]")
+
+    walk(data, base_path)
+    return results
+
+
+def _dump_json_structure_preview(data, max_keys: int = 20) -> str:
+    """Fallback diagnostic when the product's object can't be located: the
+    first-level keys of the JSON root plus one level of nesting under each,
+    so the correct path can be identified manually."""
+    lines = []
+    if isinstance(data, dict):
+        for k in list(data.keys())[:max_keys]:
+            v = data[k]
+            if isinstance(v, dict):
+                nested = list(v.keys())[:max_keys]
+                suffix = ", ..." if len(v) > max_keys else ""
+                lines.append(f"{k}: {{{', '.join(nested)}{suffix}}}")
+            elif isinstance(v, list):
+                extra = ""
+                if v and isinstance(v[0], dict):
+                    extra = f" — first item keys: {list(v[0].keys())[:max_keys]}"
+                lines.append(f"{k}: [list of {len(v)} item(s)]{extra}")
+            else:
+                lines.append(f"{k}: {v!r}")
+    elif isinstance(data, list):
+        lines.append(f"(root is a list of {len(data)} item(s))")
+        if data and isinstance(data[0], dict):
+            lines.append(f"first item keys: {list(data[0].keys())[:max_keys]}")
+    else:
+        lines.append(f"(root is a {type(data).__name__}, not an object)")
+    return "\n".join(lines)
+
+
+async def _report_embedded_json_signals(message: Message, label: str, html: str, url: str) -> None:
+    """For each embedded JSON/state blob in the raw HTML, parse it fully
+    (not a regex grep) and locate the MAIN PRODUCT's own object — the dict
+    holding the page's product ID/SKU (extracted from url) as a direct
+    sibling value — then report the full path and value of every
+    sellable/is_available-like key found WITHIN that specific object, not
+    just the first such key anywhere in the blob (which could belong to an
+    unrelated related-products list, a different variant, etc.). Falls back
+    to a root-plus-one-level structure dump per blob when the product
+    object can't be located, so the correct path can be found manually."""
     blobs = _find_embedded_json_blobs(html)
     if not blobs:
         await _debug_send(
@@ -798,21 +899,56 @@ async def _report_embedded_json_signals(message: Message, label: str, html: str)
         )
         return
 
+    candidate_ids = _extract_candidate_product_ids(url)
+
     for source_label, json_text in blobs:
-        matches = _find_matching_json_keys(json_text)
-        if not matches:
+        try:
+            parsed = json.loads(json_text)
+        except Exception as exc:
             await _debug_send(
                 message,
-                f"[{label}] {source_label}: found ({len(json_text)} chars) but no keys "
-                f"matching stock/availab/inStock/sellable/buyable.",
+                f"[{label}] {source_label}: found ({len(json_text)} chars) but failed "
+                f"to parse as JSON: {exc}",
             )
             continue
-        _MAX_REPORTED = 30
-        lines = [f"[{label}] {source_label}: {len(matches)} matching key(s):"]
-        for key, value in matches[:_MAX_REPORTED]:
-            lines.append(f"  {key!r}: {value}")
-        if len(matches) > _MAX_REPORTED:
-            lines.append(f"  ... and {len(matches) - _MAX_REPORTED} more, not shown")
+
+        match = None
+        if candidate_ids:
+            match = _find_product_object(parsed, candidate_ids, substring_ok=False)
+            if match is None:
+                match = _find_product_object(parsed, candidate_ids, substring_ok=True)
+
+        if match is None:
+            preview = _dump_json_structure_preview(parsed)
+            reason = (
+                f"no candidate product ID could be extracted from the URL"
+                if not candidate_ids
+                else f"none of {candidate_ids!r} (from the URL) matched anywhere in this blob"
+            )
+            await _debug_send(
+                message,
+                f"[{label}] {source_label}: couldn't locate the product's object — {reason}.\n"
+                f"Root structure (first-level keys + one level of nesting):\n{preview}",
+            )
+            continue
+
+        product_path, product_obj = match
+        stock_keys = _find_stock_keys_within(product_obj, product_path)
+        if not stock_keys:
+            await _debug_send(
+                message,
+                f"[{label}] {source_label}: product object located at "
+                f"{product_path or '(root)'!r} but no sellable/is_available-like "
+                f"key inside it.",
+            )
+            continue
+
+        lines = [
+            f"[{label}] {source_label}: product object located at "
+            f"{product_path or '(root)'!r} — stock-related field(s):"
+        ]
+        for full_path, value in stock_keys:
+            lines.append(f"  {full_path} = {value!r}")
         await _debug_send(message, "\n".join(lines))
 
 
@@ -862,7 +998,7 @@ async def _run_debug_reliance_trial(message: Message, label: str, url: str, **sc
         message, f"[{label}] HTTP {status_code} | raw HTML length: {len(html)} chars\n{phrase_diag}"
     )
 
-    await _report_embedded_json_signals(message, label, html)
+    await _report_embedded_json_signals(message, label, html, url)
 
     await _debug_send(message, f"[{label}] visible text: {len(visible_text)} chars total (sending in full).")
     _CHUNK_SIZE = 4000
