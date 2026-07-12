@@ -36,6 +36,7 @@ def build_scraper_url(
     custom_headers: bool = False,
     wait_until: str | None = None,
     custom_wait_ms: int | None = None,
+    super_proxy: bool = False,
 ) -> str:
     # Read at call time so Railway's runtime env var is always used,
     # regardless of when this module was first imported.
@@ -66,4 +67,9 @@ def build_scraper_url(
         # pages whose JS keeps mutating the DOM after the network goes idle.
         # Also opt-in/unused by existing call sites.
         params["customWait"] = str(custom_wait_ms)
+    if super_proxy:
+        # Scrape.do's premium/residential proxy pool ("Super Proxy") — costs
+        # more credits per request than the default proxy tier and may not
+        # be available on every plan. Opt-in, unused by existing call sites.
+        params["super"] = "true"
     return f"{SCRAPEDO_API_URL}?{urlencode(params)}"

@@ -630,22 +630,85 @@ async def cmd_debugoneplus(message: Message, command: CommandObject):
 
 # ---------------------------------------------------------------------------
 # TEMPORARY debug command for tuning checkers/reliancedigital.py against
-# real product pages — same pattern as /debugoneplus above, same
-# waitUntil render setting (proven to fix OnePlus's incomplete rendering).
-# NOT wired into CHECKER_MAP or the regular check cycle — RelianceDigital's
-# live check_stock fetch is completely untouched by this. Safe to delete
-# once no longer needed.
+# real product pages — same admin restriction as /debugoneplus above. NOT
+# wired into CHECKER_MAP or the regular check cycle — RelianceDigital's live
+# check_stock fetch is completely untouched by this. Safe to delete once no
+# longer needed.
+#
+# Runs TWO isolated trials (each its own Scrape.do request) to separate two
+# competing hypotheses for why RelianceDigital pages show an anti-bot/stale-
+# cache wall: a rendering-timing issue (fixed by waiting longer) vs. a
+# proxy/IP-reputation issue (fixed by a better proxy pool). Each trial is
+# reported independently — see _run_debug_reliance_trial — so one failing
+# (e.g. super=true not being available on the current plan) never prevents
+# the other from running or being reported.
 # ---------------------------------------------------------------------------
 _DEBUG_RELIANCE_ADMIN_ID = 5004721766  # same hardcoded restriction as
 # /debugoneplus, on top of the router's own ADMIN_USER_ID filter — this
 # fetches an arbitrary caller-supplied URL via Scrape.do (spends credits).
-_DEBUG_RELIANCE_WAIT_UNTIL = "networkidle0"
-# Own constant, independent of _DEBUG_ONEPLUS_CUSTOM_WAIT_MS — each debug
-# command already passes custom_wait_ms as a plain per-call argument to
-# build_scraper_url(), so this is already a site-specific override with no
-# further plumbing needed. Raised from 4000 to 8000: RelianceDigital pages
-# needed longer to finish rendering than OnePlus's proven 4000ms.
-_DEBUG_RELIANCE_CUSTOM_WAIT_MS = 8000
+
+# The literal string RelianceDigital shows on what looks like an anti-bot/
+# stale-cache interstitial. Checked against both the raw HTML (full
+# response text, script/style included) and the visible text (script/style
+# stripped) so the report can distinguish "present in the actual
+# rendered/static page" from "only exists inside a <script>/<style> tag" —
+# the latter means it's client-side-JS-injected content, not something
+# that's actually shown/rendered on the page as fetched.
+_RELIANCE_ANTIBOT_PHRASE = "Please Update the Page in Theme"
+
+
+async def _run_debug_reliance_trial(message: Message, label: str, url: str, **scraper_kwargs) -> None:
+    """Fetch `url` via Scrape.do with the given build_scraper_url() kwargs
+    and send a labeled diagnostic report: HTTP status, raw HTML length,
+    where _RELIANCE_ANTIBOT_PHRASE was (or wasn't) found, then the first
+    3000 chars of visible text chunked under Telegram's 4096-char limit.
+    Any failure here is reported under this trial's own label and does not
+    raise — the caller runs each trial independently."""
+    await message.answer(f"— {label} —")
+
+    try:
+        scraper_url = build_scraper_url(url, **scraper_kwargs)
+        async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=60.0) as client:
+            resp = await client.get(scraper_url)
+        status_code = resp.status_code
+        html = resp.text
+    except Exception as exc:
+        await message.answer(f"⚠️ [{label}] Fetch failed: {exc}")
+        return
+
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    visible_text = soup.get_text(" ", strip=True)
+
+    phrase_lower = _RELIANCE_ANTIBOT_PHRASE.lower()
+    in_raw = phrase_lower in html.lower()
+    in_visible = phrase_lower in visible_text.lower()
+    if not in_raw:
+        phrase_diag = f"{_RELIANCE_ANTIBOT_PHRASE!r} not found anywhere in the raw HTML."
+    elif in_visible:
+        phrase_diag = (
+            f"{_RELIANCE_ANTIBOT_PHRASE!r} found in the VISIBLE text — present in the "
+            f"actual rendered/static page, not just inside a <script>/<style> tag."
+        )
+    else:
+        phrase_diag = (
+            f"{_RELIANCE_ANTIBOT_PHRASE!r} found in the raw HTML but ONLY inside a "
+            f"stripped <script>/<style> tag — likely injected/rendered by client-side "
+            f"JS, not present as static/visible text as fetched."
+        )
+
+    await message.answer(
+        f"[{label}] HTTP {status_code} | raw HTML length: {len(html)} chars\n{phrase_diag}"
+    )
+
+    snippet = visible_text[:3000]
+    await message.answer(
+        f"[{label}] visible text: {len(visible_text)} chars total, showing first {len(snippet)}."
+    )
+    _CHUNK_SIZE = 4000
+    for i in range(0, len(snippet), _CHUNK_SIZE):
+        await message.answer(snippet[i:i + _CHUNK_SIZE])
 
 
 @router.message(Command("debugreliance"))
@@ -657,35 +720,13 @@ async def cmd_debugreliance(message: Message, command: CommandObject):
         return
 
     url = command.args.strip()
-    await message.answer(
-        f"🔍 Fetching (render=true, waitUntil={_DEBUG_RELIANCE_WAIT_UNTIL}, "
-        f"customWait={_DEBUG_RELIANCE_CUSTOM_WAIT_MS}ms): {url}"
+    await message.answer(f"🔍 Running 2 diagnostic trials for: {url}")
+
+    await _run_debug_reliance_trial(
+        message, "Trial A: render=true only (no waitUntil/customWait)", url,
+        render_js=True,
     )
-
-    try:
-        scraper_url = build_scraper_url(
-            url,
-            render_js=True,
-            wait_until=_DEBUG_RELIANCE_WAIT_UNTIL,
-            custom_wait_ms=_DEBUG_RELIANCE_CUSTOM_WAIT_MS,
-        )
-        async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=60.0) as client:
-            resp = await client.get(scraper_url)
-            resp.raise_for_status()
-        html = resp.text
-    except Exception as exc:
-        await message.answer(f"⚠️ Fetch failed: {exc}")
-        return
-
-    soup = BeautifulSoup(html, "html.parser")
-    for tag in soup(["script", "style"]):
-        tag.decompose()
-    visible_text = soup.get_text(" ", strip=True)
-    snippet = visible_text[:3000]
-
-    await message.answer(
-        f"📄 Visible text: {len(visible_text)} chars total, showing first {len(snippet)}."
+    await _run_debug_reliance_trial(
+        message, "Trial B: super=true (premium proxy)", url,
+        super_proxy=True,
     )
-    _CHUNK_SIZE = 4000
-    for i in range(0, len(snippet), _CHUNK_SIZE):
-        await message.answer(snippet[i:i + _CHUNK_SIZE])
