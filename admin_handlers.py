@@ -11,6 +11,7 @@ register_admin_commands in bot.py).
 
 import asyncio
 import logging
+import re
 from calendar import monthrange
 from collections import Counter
 from datetime import datetime
@@ -679,6 +680,141 @@ _DEBUG_RELIANCE_ADMIN_ID = 5004721766  # same hardcoded restriction as
 # that's actually shown/rendered on the page as fetched.
 _RELIANCE_ANTIBOT_PHRASE = "Please Update the Page in Theme"
 
+# Substrings (case-insensitive) of JSON key names worth surfacing from any
+# embedded state blob — covers the common variants sites use for a stock
+# flag without needing to guess the exact key name up front.
+_JSON_STATE_KEYWORDS = ("stock", "availab", "instock", "sellable", "buyable")
+
+# "key": value — value is a quoted string, a number, true/false/null, or the
+# opening brace/bracket of a nested object/array (not expanded further; see
+# _find_matching_json_keys). Regex-based rather than a full JSON parse so a
+# single malformed/truncated blob can't take down the whole scan — each
+# match is independent of the blob's overall validity.
+_JSON_KV_RE = re.compile(r'"([^"]+)"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|null|[\{\[])')
+
+
+def _extract_balanced_json(text: str, start_idx: int) -> str | None:
+    """Starting from start_idx, skip to the first '{' or '[' and return the
+    substring up to its matching close, respecting string literals (so a
+    brace/bracket inside a quoted string doesn't throw off the depth
+    count). Returns None if no balanced blob is found."""
+    i = start_idx
+    while i < len(text) and text[i] not in "{[":
+        i += 1
+    if i >= len(text):
+        return None
+    open_ch, close_ch = ("{", "}") if text[i] == "{" else ("[", "]")
+    depth = 0
+    in_string = False
+    escape = False
+    start = i
+    for j in range(i, len(text)):
+        ch = text[j]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return text[start:j + 1]
+    return None
+
+
+def _find_embedded_json_blobs(html: str) -> list[tuple[str, str]]:
+    """Locate embedded JSON/state blobs in the RAW HTML (script/style
+    content included — this deliberately does NOT use the script-stripped
+    visible text): a Next.js __NEXT_DATA__ script tag, any
+    <script type="application/json"> block, and a window.__INITIAL_STATE__
+    assignment inside a plain <script> tag. Returns (source_label, blob)
+    pairs; a page with none of these returns an empty list, which the
+    caller reports explicitly rather than treating as "no signal"."""
+    blobs: list[tuple[str, str]] = []
+    soup = BeautifulSoup(html, "html.parser")
+
+    next_data_tag = soup.find("script", id="__NEXT_DATA__")
+    if next_data_tag is not None and next_data_tag.string:
+        blobs.append(("__NEXT_DATA__", next_data_tag.string))
+
+    for i, tag in enumerate(soup.find_all("script", type="application/json")):
+        if tag is next_data_tag or not tag.string:
+            continue
+        label = f'<script type="application/json"> #{i}' + (f' id={tag.get("id")!r}' if tag.get("id") else "")
+        blobs.append((label, tag.string))
+
+    for tag in soup.find_all("script"):
+        text = tag.string
+        if not text:
+            continue
+        idx = text.find("__INITIAL_STATE__")
+        if idx == -1:
+            continue
+        eq_idx = text.find("=", idx)
+        if eq_idx == -1:
+            continue
+        json_text = _extract_balanced_json(text, eq_idx + 1)
+        if json_text:
+            blobs.append(("window.__INITIAL_STATE__", json_text))
+
+    return blobs
+
+
+def _find_matching_json_keys(json_text: str) -> list[tuple[str, str]]:
+    """Scan json_text for "key": value pairs whose key matches
+    _JSON_STATE_KEYWORDS (case-insensitive substring). Nested object/array
+    values are reported as-is (opening bracket only, not expanded) rather
+    than risking an expensive/incorrect deep walk of a blob that might not
+    even be fully valid JSON."""
+    matches = []
+    for m in _JSON_KV_RE.finditer(json_text):
+        key = m.group(1)
+        if any(kw in key.lower() for kw in _JSON_STATE_KEYWORDS):
+            value = m.group(2)
+            if value in ("{", "["):
+                value = f"{value}...(nested, not expanded)"
+            matches.append((key, value))
+    return matches
+
+
+async def _report_embedded_json_signals(message: Message, label: str, html: str) -> None:
+    """Report every matching key found in any embedded JSON/state blob in
+    the raw HTML — or explicitly that none was found, so it's clear the
+    stock signal (if any) lives somewhere else on the page."""
+    blobs = _find_embedded_json_blobs(html)
+    if not blobs:
+        await _debug_send(
+            message,
+            f"[{label}] embedded JSON state: no __NEXT_DATA__, "
+            f"window.__INITIAL_STATE__, or <script type=\"application/json\"> "
+            f"blocks found in the raw HTML.",
+        )
+        return
+
+    for source_label, json_text in blobs:
+        matches = _find_matching_json_keys(json_text)
+        if not matches:
+            await _debug_send(
+                message,
+                f"[{label}] {source_label}: found ({len(json_text)} chars) but no keys "
+                f"matching stock/availab/inStock/sellable/buyable.",
+            )
+            continue
+        _MAX_REPORTED = 30
+        lines = [f"[{label}] {source_label}: {len(matches)} matching key(s):"]
+        for key, value in matches[:_MAX_REPORTED]:
+            lines.append(f"  {key!r}: {value}")
+        if len(matches) > _MAX_REPORTED:
+            lines.append(f"  ... and {len(matches) - _MAX_REPORTED} more, not shown")
+        await _debug_send(message, "\n".join(lines))
+
 
 async def _run_debug_reliance_trial(message: Message, label: str, url: str, **scraper_kwargs) -> None:
     """Fetch `url` via Scrape.do with the given build_scraper_url() kwargs
@@ -725,6 +861,8 @@ async def _run_debug_reliance_trial(message: Message, label: str, url: str, **sc
     await _debug_send(
         message, f"[{label}] HTTP {status_code} | raw HTML length: {len(html)} chars\n{phrase_diag}"
     )
+
+    await _report_embedded_json_signals(message, label, html)
 
     await _debug_send(message, f"[{label}] visible text: {len(visible_text)} chars total (sending in full).")
     _CHUNK_SIZE = 4000
