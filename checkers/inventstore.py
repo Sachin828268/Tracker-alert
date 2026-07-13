@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 
 from bs4 import BeautifulSoup
 
@@ -11,22 +12,31 @@ logger = logging.getLogger(__name__)
 # verdict from a still-blocked page" retry/skip logic).
 NEEDS_JS = True
 
-_ADD_PATTERNS = ["add to cart", "add to bag", "buy now", "pre-order"]
-_OOS_PATTERNS = [
-    "out of stock", "sold out", "currently unavailable",
-    "notify me when available", "notify me", "coming soon",
-]
+# WooCommerce's standard availability_html markup for a product/variation
+# is a <p class="stock in-stock">In stock</p> or
+# <p class="stock out-of-stock">Out of stock</p> element. This site
+# renders variations into a JSON blob (e.g. a variation-form data
+# attribute or an embedded <script> state object) where that HTML is
+# embedded as a JSON STRING value, so its quotes come out backslash-
+# escaped in the raw response (class=\"stock out-of-stock\"). The
+# backslash is optional in this pattern so it matches both that escaped
+# form and a plain, directly-rendered one.
+_STOCK_CLASS_PATTERN = re.compile(r'class=\\?"stock (in-stock|out-of-stock)\\?"', re.IGNORECASE)
 
-# Elements considered part of the product's own "buy button area" — an
-# OOS/sold-out phrase only counts as authoritative when it's inside one
-# of these (or a direct parent of one), not just matched anywhere on the
-# page, where an unrelated section (a "related products" carousel, a
-# footer policy blurb) could easily contain "out of stock" text that has
-# nothing to do with THIS product.
-_BUY_AREA_CLASS_HINTS = (
-    "buy-box", "buybox", "product-form", "product-actions",
-    "add-to-cart", "addtocart", "product-buy", "pdp-buy", "cart-form",
-)
+
+def _count_woocommerce_stock_classes(html: str) -> tuple[int, int]:
+    """Count every occurrence of WooCommerce's stock-status class pattern
+    in the raw HTML — one occurrence per product variation on a
+    variable-product page. Returns (in_stock_count, out_of_stock_count)."""
+    in_stock_count = 0
+    out_of_stock_count = 0
+    for match in _STOCK_CLASS_PATTERN.finditer(html):
+        if match.group(1).lower() == "in-stock":
+            in_stock_count += 1
+        else:
+            out_of_stock_count += 1
+    return in_stock_count, out_of_stock_count
+
 
 def _offer_availability(offers) -> str:
     """Extract the first availability string from a JSON-LD 'offers'
@@ -50,64 +60,34 @@ def _offer_availability(offers) -> str:
     return ""
 
 
-def _visible_text(html: str) -> str:
-    text_soup = BeautifulSoup(html, "html.parser")
-    for tag in text_soup(["script", "style"]):
-        tag.decompose()
-    return text_soup.get_text(" ", strip=True)
-
-
-def _buy_area_elements(soup: BeautifulSoup):
-    """Yield elements considered part of the product's own buy-button
-    area: every <button>/<a> tag, plus any element whose class/id matches
-    a _BUY_AREA_CLASS_HINTS substring, plus each such element's immediate
-    parent (to catch a "Sold Out" label sitting next to, or wrapping, a
-    disabled button — e.g.
-    <div class="buy-box"><button disabled>Notify Me</button></div>)."""
-    seen: set[int] = set()
-    candidates = list(soup.find_all(["button", "a"]))
-    for el in soup.find_all(True):
-        attrs_text = " ".join(el.get("class", [])) + " " + (el.get("id") or "")
-        if any(hint in attrs_text.lower() for hint in _BUY_AREA_CLASS_HINTS):
-            candidates.append(el)
-
-    for el in candidates:
-        if id(el) not in seen:
-            seen.add(id(el))
-            yield el
-        parent = el.parent
-        if parent is not None and id(parent) not in seen:
-            seen.add(id(parent))
-            yield parent
-
-
 def check(soup: BeautifulSoup, html: str) -> bool:
     """
-    inventstore.in's own stock-detection waterfall. Real /check results
-    showed the previous shared checkers.common.generic_marketplace_check()
-    waterfall (OOS text checked BEFORE buttons, and matched anywhere in
-    the raw HTML) misreading this site: a confirmed-working, genuinely
-    in-stock page shows "Buy Now" clearly with no "out of stock" text
-    anywhere, yet the OOS-first, unscoped-match ordering could still be
-    thrown off by an unrelated mention elsewhere on the page (e.g. a
-    "related products" section referencing a DIFFERENT, actually-OOS
-    item). Two changes from the shared waterfall:
+    inventstore.in's stock-detection logic, now based on the confirmed
+    WooCommerce variation stock-class pattern rather than page text.
 
-    1. Buy Now / Add to Cart presence is now the PRIMARY signal, checked
-       BEFORE any OOS text (not after) — a positive purchase affordance
-       is trusted immediately rather than being second-guessed by
-       scanning for a negative signal first.
-    2. "out of stock"/"sold out" is only treated as authoritative when it
-       appears within the product's own buy-button area (see
-       _buy_area_elements) — a page-wide/unscoped match is no longer
-       trusted at all, so a stray mention elsewhere on the page can't
-       produce a false OOS read for this product.
+    The previous "Buy Now"/"Add to Cart" text-based primary signal has
+    been removed entirely — confirmed unreliable, since that button text
+    is static on this site's product pages regardless of actual stock
+    status. The generic embedded-JSON substring key check (a prior
+    fallback here) is also removed: on a page with multiple product
+    variations, a plain "first occurrence wins" substring match can't
+    tell "this ONE variation is unavailable" apart from "the WHOLE
+    product is unavailable" — exactly the ambiguity this WooCommerce-
+    specific, occurrence-counting approach is built to resolve correctly
+    instead.
 
-    JSON-LD and embedded-JSON stock signals are kept as the highest-
-    priority checks (unchanged) — they're structured, not free text.
-    Defaults to out of stock when no signal is found at all, per this
-    codebase's standing principle that a missed alert is safer than a
-    false one.
+    Detection order:
+    1. JSON-LD product-level availability (kept — a structured,
+       whole-product signal, not per-variation free text, and not
+       implicated in the issues that led to this change).
+    2. WooCommerce variation stock classes (see
+       _count_woocommerce_stock_classes): if ANY occurrence is
+       class="stock in-stock", the product is in stock — at least one
+       purchasable variation exists. Only if EVERY matched occurrence is
+       class="stock out-of-stock" (and at least one was found) is the
+       product reported out of stock.
+    3. No signal at all -> defaults to out of stock, per this codebase's
+       standing principle that a missed alert is safer than a false one.
     """
     # ── JSON-LD ──────────────────────────────────────────────────────────
     for script in soup.find_all("script", type="application/ld+json"):
@@ -126,32 +106,21 @@ def check(soup: BeautifulSoup, html: str) -> bool:
                 logger.info("[inventstore] JSON-LD: OutOfStock/Discontinued → False")
                 return False
 
-    # ── Embedded JSON ────────────────────────────────────────────────────
-    for key in ('"inStock":true', '"in_stock":true', '"isAvailable":true', '"available":true'):
-        if key in html:
-            logger.info(f"[inventstore] embedded JSON {key!r} → True")
-            return True
-    for key in ('"inStock":false', '"in_stock":false', '"isAvailable":false', '"available":false'):
-        if key in html:
-            logger.info(f"[inventstore] embedded JSON {key!r} → False")
-            return False
-
-    # ── PRIMARY signal: Buy Now / Add to Cart presence, checked BEFORE
-    # any OOS text ─────────────────────────────────────────────────────
-    visible_text = _visible_text(html).lower()
-    if any(p in visible_text for p in _ADD_PATTERNS):
-        logger.info("[inventstore] Buy Now/Add to Cart text found → True (in stock)")
+    # ── WooCommerce variation stock classes ─────────────────────────────
+    in_stock_count, out_of_stock_count = _count_woocommerce_stock_classes(html)
+    if in_stock_count > 0:
+        logger.info(
+            f"[inventstore] WooCommerce variation classes: {in_stock_count} "
+            f"in-stock, {out_of_stock_count} out-of-stock → True (at least "
+            f"one purchasable variation)"
+        )
         return True
-
-    # ── OOS text — authoritative ONLY within the buy-button area. Every
-    # candidate element is scanned regardless of disabled state (unlike
-    # the positive ADD_PATTERNS check above) — a disabled "Notify Me"
-    # button's own text IS the OOS signal here, not something to skip. ──
-    for el in _buy_area_elements(soup):
-        el_text = el.get_text(" ", strip=True).lower()
-        if any(pattern in el_text for pattern in _OOS_PATTERNS):
-            logger.info("[inventstore] OOS text found within the buy-button area → False")
-            return False
+    if out_of_stock_count > 0:
+        logger.info(
+            f"[inventstore] WooCommerce variation classes: {out_of_stock_count} "
+            f"out-of-stock, 0 in-stock → False"
+        )
+        return False
 
     logger.info("[inventstore] no conclusive signal → defaulting OUT OF STOCK (False)")
     return False
