@@ -1,8 +1,33 @@
 import json
 import logging
+
+import httpx
 from bs4 import BeautifulSoup
 
+from .common import build_scraper_url, HEADERS
+
 logger = logging.getLogger(__name__)
+
+# Best-guess CSS selectors for RelianceDigital's pincode-entry widget —
+# NOT verified against the real site (no live network access from this
+# sandbox to inspect it). Kept as top-of-file constants specifically so
+# a real inspection can correct them in one place. See
+# fetch_with_pincode_interaction below and admin_handlers.py's
+# /debugreliance2 — the verification loop this needs to go through
+# before being trusted for anything, following the same "best guess,
+# verify via a debug command, tune from real results" pattern already
+# used throughout this codebase's newer checkers.
+_PINCODE_INPUT_SELECTOR = "input[placeholder*='incode' i]"
+# Comma-separated CSS selector list — hedges across a couple of
+# plausible class-name conventions for the submit/"Check" button, since
+# (unlike the input, which usually has an identifying placeholder) a
+# submit button has no equally reliable convention to guess from.
+_PINCODE_SUBMIT_SELECTOR = "button[class*='pincode' i], button[class*='check' i]"
+# Fixed wait after the click/fill/submit sequence, giving the page's own
+# JS time to process the pincode change and update its DOM/state before
+# Scrape.do captures the final HTML — no specific "update complete"
+# selector is known to wait on instead (same unverified-guess caveat).
+_PINCODE_INTERACTION_WAIT_MS = 4000
 
 # Documentation-only (not read by any code — see stock_checker._JS_SITES for
 # the actual render=true/false switch). Set to False as of the credit-cost
@@ -68,6 +93,39 @@ def _offer_availability(offers) -> str:
             if isinstance(o, dict) and o.get("availability"):
                 return str(o["availability"])
     return ""
+
+
+async def fetch_with_pincode_interaction(url: str, pincode: str = "110001") -> str:
+    """
+    DEBUG-ONLY — not called by check() or wired into stock_checker.py's
+    live check_stock() path. Fetches url via Scrape.do (render=true +
+    super=true), simulating a real user entering a pincode into the
+    page's pincode-check widget before the final HTML is captured:
+    click the pincode input -> fill it with `pincode` -> click the
+    submit/check button -> wait _PINCODE_INTERACTION_WAIT_MS for the
+    page's own JS to process the change.
+
+    Uses Scrape.do's "playWithBrowser" browser-interaction actions (see
+    checkers/common.py's build_scraper_url for how this is confirmed to
+    exist). The exact CSS selectors for RelianceDigital's pincode input/
+    submit button are BEST-GUESS, not verified against the real site —
+    this function exists specifically so admin_handlers.py's
+    /debugreliance2 can reveal whether they actually work, before
+    anything here is trusted for production use.
+    """
+    actions = [
+        {"Action": "Click", "Selector": _PINCODE_INPUT_SELECTOR},
+        {"Action": "Fill", "Selector": _PINCODE_INPUT_SELECTOR, "Value": pincode},
+        {"Action": "Click", "Selector": _PINCODE_SUBMIT_SELECTOR},
+        {"Action": "Wait", "Timeout": _PINCODE_INTERACTION_WAIT_MS},
+    ]
+    scraper_url = build_scraper_url(
+        url, render_js=True, super_proxy=True, play_with_browser=actions,
+    )
+    async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=90.0) as client:
+        resp = await client.get(scraper_url)
+        resp.raise_for_status()
+    return resp.text
 
 
 def check(soup: BeautifulSoup, html: str) -> bool:

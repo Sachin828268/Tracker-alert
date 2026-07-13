@@ -41,6 +41,7 @@ def build_scraper_url(
     wait_until: str | None = None,
     custom_wait_ms: int | None = None,
     super_proxy: bool = False,
+    play_with_browser: list[dict] | None = None,
 ) -> str:
     # Read at call time so Railway's runtime env var is always used,
     # regardless of when this module was first imported.
@@ -76,6 +77,20 @@ def build_scraper_url(
         # more credits per request than the default proxy tier and may not
         # be available on every plan. Opt-in, unused by existing call sites.
         params["super"] = "true"
+    if play_with_browser:
+        # Scrape.do's browser-interaction action chain (Click/Fill/Wait/
+        # WaitSelector/Execute/...) — confirmed to exist via Scrape.do's
+        # own documentation (scrape.do/documentation/headless-browser/
+        # browser-interactions/, cross-checked across two independent
+        # search-result extractions since a direct fetch of that page
+        # from this sandbox returned HTTP 403). Only meaningful alongside
+        # render_js=True (requires the headless browser). Passed as a
+        # JSON array under the "playWithBrowser" query parameter;
+        # urlencode() below applies the required URL-encoding. Whether
+        # this combines with super_proxy, and whether it's available on
+        # every plan, is NOT confirmed — untested beyond what the docs
+        # describe. Opt-in, unused by every existing call site.
+        params["playWithBrowser"] = json.dumps(play_with_browser)
     return f"{SCRAPEDO_API_URL}?{urlencode(params)}"
 
 

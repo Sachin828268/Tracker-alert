@@ -26,7 +26,9 @@ from aiogram.types import Message
 from bs4 import BeautifulSoup
 
 from access import compute_access, STATUS_TRIAL, STATUS_ACTIVE, STATUS_EXPIRED_GRACE, STATUS_LOCKED
-from checkers import build_scraper_url, HEADERS, fetch_with_502_retry, shopatsc, unicornstore, inventstore
+from checkers import (
+    build_scraper_url, HEADERS, fetch_with_502_retry, shopatsc, unicornstore, inventstore, reliancedigital,
+)
 from config import ADMIN_USER_ID, REMINDER_HOURS_BEFORE_EXPIRY, get_site_label
 from database import (
     IST,
@@ -1042,6 +1044,77 @@ async def cmd_debugreliance(message: Message, command: CommandObject):
             message, "super=true (premium proxy, default)", url,
             super_proxy=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# TEMPORARY debug command for verifying Scrape.do's "playWithBrowser"
+# browser-interaction actions (Click/Fill/Wait — confirmed to exist via
+# Scrape.do's own documentation, see checkers/common.py's build_scraper_url)
+# against RelianceDigital's pincode-entry widget: click the pincode input,
+# fill it with a pincode, click the submit/check button, wait, then capture
+# the resulting HTML. Same admin restriction as /debugreliance above. NOT
+# wired into CHECKER_MAP or the regular check cycle — calls
+# checkers.reliancedigital.fetch_with_pincode_interaction(), a debug-only
+# function checkers/reliancedigital.py's own check()/production path never
+# touches. The CSS selectors used are BEST-GUESS, not verified against the
+# real site (no live network access from this sandbox) — this command's
+# entire purpose is to reveal whether they actually work. Safe to delete
+# once no longer needed.
+# ---------------------------------------------------------------------------
+_DEBUG_RELIANCE2_ADMIN_ID = 5004721766  # same hardcoded restriction as
+# every other /debug* command above, on top of the router's own
+# ADMIN_USER_ID filter — this fetches an arbitrary caller-supplied URL via
+# Scrape.do (spends credits, and render=true+super=true+playWithBrowser is
+# likely a more expensive combination than the plain fetches other /debug*
+# commands make).
+
+
+@router.message(Command("debugreliance2"))
+async def cmd_debugreliance2(message: Message, command: CommandObject):
+    if message.from_user.id != _DEBUG_RELIANCE2_ADMIN_ID:
+        return
+    if not command.args:
+        await message.answer(
+            "Usage: <code>/debugreliance2 &lt;url&gt; [pincode]</code>", parse_mode="HTML"
+        )
+        return
+
+    parts = command.args.strip().rsplit(maxsplit=1)
+    if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) == 6:
+        url, pincode = parts
+    else:
+        url, pincode = command.args.strip(), "110001"
+
+    await _debug_send(
+        message,
+        f"🔍 Simulating pincode entry (click → fill {pincode!r} → click submit → "
+        f"wait) via Scrape.do playWithBrowser, render=true + super=true: {url}\n"
+        f"Selectors used (best-guess, unverified): input={reliancedigital._PINCODE_INPUT_SELECTOR!r} "
+        f"submit={reliancedigital._PINCODE_SUBMIT_SELECTOR!r}",
+    )
+
+    try:
+        html = await reliancedigital.fetch_with_pincode_interaction(url, pincode=pincode)
+    except Exception as exc:
+        await _debug_send(message, f"⚠️ playWithBrowser fetch failed: {exc}")
+        return
+
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    visible_text = soup.get_text(" ", strip=True)
+
+    await _debug_send(
+        message,
+        f"Raw HTML length: {len(html)} chars | visible text: {len(visible_text)} chars",
+    )
+
+    await _report_embedded_json_signals(message, "debugreliance2", html, url)
+
+    await _debug_send(message, f"[debugreliance2] visible text: {len(visible_text)} chars total (sending in full).")
+    _CHUNK_SIZE = 4000
+    for i in range(0, len(visible_text), _CHUNK_SIZE):
+        await _debug_send(message, visible_text[i:i + _CHUNK_SIZE])
 
 
 # ---------------------------------------------------------------------------
