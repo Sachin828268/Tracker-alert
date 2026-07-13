@@ -410,9 +410,14 @@ def create_app() -> Flask:
     def block_user(uid):
         if _require_user(uid) is None:
             return redirect(url_for("users"))
+        # Unchecked checkboxes are simply omitted from the submitted form, so
+        # "notify" not being a key means the admin unchecked it — the lock
+        # itself always executes either way; only the message is conditional.
+        notify = "notify" in request.form
         if set_blocked(uid, True, ADMIN_USER_ID):
-            _tg_send(uid, block_notice_text(get_user_lang(uid)))
-            flash(f"User {uid} blocked.", "ok")
+            if notify:
+                _tg_send(uid, block_notice_text(get_user_lang(uid)))
+            flash(f"User {uid} blocked." + ("" if notify else " (not notified)."), "ok")
         else:
             flash(f"Could not block user {uid}.", "bad")
         return redirect(request.referrer or url_for("users"))
@@ -422,9 +427,11 @@ def create_app() -> Flask:
     def unblock_user(uid):
         if _require_user(uid) is None:
             return redirect(url_for("users"))
+        notify = "notify" in request.form
         if set_blocked(uid, False, ADMIN_USER_ID):
-            _tg_send(uid, unblock_notice_text(get_user_lang(uid)))
-            flash(f"User {uid} unblocked.", "ok")
+            if notify:
+                _tg_send(uid, unblock_notice_text(get_user_lang(uid)))
+            flash(f"User {uid} unblocked." + ("" if notify else " (not notified)."), "ok")
         else:
             flash(f"Could not unblock user {uid}.", "bad")
         return redirect(request.referrer or url_for("users"))

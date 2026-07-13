@@ -295,32 +295,105 @@ async def cmd_extend(message: Message, command: CommandObject):
     await send_approval_notice(message.bot, user_id, plan_name, days, updated["access_until"])
 
 
+def _notify_prompt_keyboard(action: str, user_id: int) -> InlineKeyboardMarkup:
+    """'Notify user?' Yes/No keyboard shown after /block or /unblock runs with
+    no silent/notify flag. `action` is 'block' or 'unblock', encoded into the
+    callback_data alongside the user_id so a single handler (callback_
+    blocknotify below) covers both. Only used by /block and /unblock — the
+    action (locking/unlocking the user) has ALREADY executed by the time this
+    is shown; tapping a button here only decides whether to also message the
+    user, never whether to lock/unlock them."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Yes", callback_data=f"blocknotify:{action}:{user_id}:yes"),
+        InlineKeyboardButton(text="❌ No", callback_data=f"blocknotify:{action}:{user_id}:no"),
+    ]])
+
+
+_BLOCK_USAGE = "Usage: <code>/block &lt;user_id&gt; [silent|notify]</code>"
+_UNBLOCK_USAGE = "Usage: <code>/unblock &lt;user_id&gt; [silent|notify]</code>"
+
+
 @router.message(Command("block"))
 async def cmd_block(message: Message, command: CommandObject):
-    if not command.args or not command.args.strip().lstrip("-").isdigit():
-        await message.answer("Usage: <code>/block &lt;user_id&gt;</code>", parse_mode="HTML")
+    if not command.args:
+        await message.answer(_BLOCK_USAGE, parse_mode="HTML")
         return
-    user_id = int(command.args.strip())
+    parts = command.args.split()
+    flag = parts[1].lower() if len(parts) > 1 else None
+    if not parts[0].lstrip("-").isdigit() or len(parts) > 2 or flag not in (None, "silent", "notify"):
+        await message.answer(_BLOCK_USAGE, parse_mode="HTML")
+        return
+    user_id = int(parts[0])
+
+    # The lock itself ALWAYS executes, regardless of the notify choice below —
+    # only whether a message is sent to the user is conditional.
     ok = set_blocked(user_id, True, admin_id=message.from_user.id)
     if not ok:
         await message.answer(f"⚠️ No user with id {user_id} has interacted with the bot yet.")
         return
-    await message.answer(f"🚫 Blocked user <code>{user_id}</code>.", parse_mode="HTML")
-    await send_block_notice(message.bot, user_id)
+
+    if flag == "silent":
+        await message.answer(f"🚫 Blocked user <code>{user_id}</code> (not notified).", parse_mode="HTML")
+        return
+    if flag == "notify":
+        await message.answer(f"🚫 Blocked user <code>{user_id}</code>.", parse_mode="HTML")
+        await send_block_notice(message.bot, user_id)
+        return
+    await message.answer(
+        f"🚫 Blocked user <code>{user_id}</code>.\n\nNotify them?",
+        parse_mode="HTML",
+        reply_markup=_notify_prompt_keyboard("block", user_id),
+    )
 
 
 @router.message(Command("unblock"))
 async def cmd_unblock(message: Message, command: CommandObject):
-    if not command.args or not command.args.strip().lstrip("-").isdigit():
-        await message.answer("Usage: <code>/unblock &lt;user_id&gt;</code>", parse_mode="HTML")
+    if not command.args:
+        await message.answer(_UNBLOCK_USAGE, parse_mode="HTML")
         return
-    user_id = int(command.args.strip())
+    parts = command.args.split()
+    flag = parts[1].lower() if len(parts) > 1 else None
+    if not parts[0].lstrip("-").isdigit() or len(parts) > 2 or flag not in (None, "silent", "notify"):
+        await message.answer(_UNBLOCK_USAGE, parse_mode="HTML")
+        return
+    user_id = int(parts[0])
+
     ok = set_blocked(user_id, False, admin_id=message.from_user.id)
     if not ok:
         await message.answer(f"⚠️ No user with id {user_id} has interacted with the bot yet.")
         return
-    await message.answer(f"✅ Unblocked user <code>{user_id}</code>.", parse_mode="HTML")
-    await send_unblock_notice(message.bot, user_id)
+
+    if flag == "silent":
+        await message.answer(f"✅ Unblocked user <code>{user_id}</code> (not notified).", parse_mode="HTML")
+        return
+    if flag == "notify":
+        await message.answer(f"✅ Unblocked user <code>{user_id}</code>.", parse_mode="HTML")
+        await send_unblock_notice(message.bot, user_id)
+        return
+    await message.answer(
+        f"✅ Unblocked user <code>{user_id}</code>.\n\nNotify them?",
+        parse_mode="HTML",
+        reply_markup=_notify_prompt_keyboard("unblock", user_id),
+    )
+
+
+@router.callback_query(F.data.startswith("blocknotify:"))
+async def callback_blocknotify(call: CallbackQuery):
+    _, action, user_id_raw, choice = call.data.split(":", 3)
+    user_id = int(user_id_raw)
+    if choice == "yes":
+        if action == "block":
+            await send_block_notice(call.bot, user_id)
+        else:
+            await send_unblock_notice(call.bot, user_id)
+        suffix = "✅ Notified."
+    else:
+        suffix = "🔕 Not notified."
+    await call.message.edit_text(
+        f"{call.message.text}\n\n{suffix}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
+    )
+    await call.answer()
 
 
 # ---------------------------------------------------------------------------
