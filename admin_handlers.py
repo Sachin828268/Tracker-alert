@@ -1090,6 +1090,38 @@ async def cmd_debugsonyofficial(message: Message, command: CommandObject):
                       else "❌ Failed (no response)")
         lines.append(f"Reason: {result['js_error']}")
 
+    # Raw structure dump — sent whenever the .js response parsed as JSON,
+    # regardless of whether a usable signal was found above, so the
+    # top-level "available" field (reported unreliable — True on at least
+    # one genuinely OOS product) can be directly compared against the
+    # variants[] array before any parsing-logic change is made.
+    if result["js_top_level_available_raw"] is not None or result["js_variants_raw"] is not None:
+        await _debug_send(message, "\n".join(lines))
+        lines = []
+        dump_lines = ["— Raw .js JSON structure (for diagnosing the field to use) —"]
+        dump_lines.append(f"Top-level 'available' field (currently used, reported unreliable): "
+                           f"{result['js_top_level_available_raw']!r}")
+        if result["js_variants_raw"] is not None:
+            first_variant = result["js_variants_raw"][0] if result["js_variants_raw"] else {}
+            variant0_available = first_variant.get("available", "<missing>") if isinstance(first_variant, dict) else "<no variants>"
+            dump_lines.append(f"Variant count: {result['js_variant_count']}")
+            dump_lines.append(f"variants[0]['available']: {variant0_available!r}")
+            for i, v in enumerate(result["js_variants_raw"]):
+                if isinstance(v, dict):
+                    dump_lines.append(
+                        f"  variants[{i}]: id={v.get('id')!r} title={v.get('title') or v.get('public_title')!r} "
+                        f"available={v.get('available')!r} price={v.get('price')!r}"
+                    )
+            dump_lines.append("")
+            dump_lines.append("Full variants[] JSON:")
+            dump_lines.append(json.dumps(result["js_variants_raw"], indent=2, default=str))
+        else:
+            dump_lines.append("No 'variants' array present in the response.")
+        full_dump = "\n".join(dump_lines)
+        _CHUNK_SIZE = 4000
+        for i in range(0, len(full_dump), _CHUNK_SIZE):
+            await _debug_send(message, full_dump[i:i + _CHUNK_SIZE])
+
     lines.append("")
     if result["used_fallback"]:
         lines.append("— Fell back to HTML scraping via Scrape.do (render=true) —")

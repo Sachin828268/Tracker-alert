@@ -140,6 +140,17 @@ async def debug_check(url: str) -> dict:
         "js_status_code": None,
         "js_error": None,
         "js_raw_available": None,
+        # Raw structure dump, captured whenever the .js response parses as
+        # JSON — regardless of whether a usable signal is found below — so
+        # a misleading/missing field can be diagnosed from the real
+        # response. The top-level "available" field is currently used as
+        # the primary signal below but has been reported unreliable (True
+        # on at least one genuinely out-of-stock product); these raw
+        # fields let that be confirmed/compared against variants[] before
+        # any parsing-logic change is made.
+        "js_top_level_available_raw": None,
+        "js_variants_raw": None,
+        "js_variant_count": None,
         "used_fallback": False,
         "fallback_status_code": None,
         "fallback_error": None,
@@ -167,6 +178,13 @@ async def debug_check(url: str) -> dict:
                 result["js_error"] = f"response was not valid JSON: {exc}"
                 data = None
             if data is not None:
+                if isinstance(data, dict):
+                    result["js_top_level_available_raw"] = data.get("available", "<no top-level 'available' key>")
+                    variants = data.get("variants")
+                    if isinstance(variants, list):
+                        result["js_variants_raw"] = variants
+                        result["js_variant_count"] = len(variants)
+
                 available = _extract_available(data)
                 if available is None:
                     result["js_error"] = "JSON parsed but no usable 'available' field (checked top-level and variants[0])"
