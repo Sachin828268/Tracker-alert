@@ -1044,16 +1044,19 @@ async def cmd_debugreliance(message: Message, command: CommandObject):
 
 
 # ---------------------------------------------------------------------------
-# TEMPORARY debug command for tuning checkers/shopatsc.py's two-stage flow
-# (.js Shopify endpoint first, HTML-scrape fallback second) — same admin
-# restriction as /debugoneplus and /debugreliance above. NOT wired into
-# CHECKER_MAP or the regular check cycle — shopatsc's live check_stock
-# fetch (stock_checker.py) is completely untouched by this; it calls
-# checkers.shopatsc.check_via_js_endpoint()/check() directly. This command
-# instead calls checkers.shopatsc.debug_check(), a diagnostics-only sibling
-# that runs the exact same two-stage logic but returns rich detail (status
-# codes, errors, raw signal, elapsed time) instead of collapsing to a bool.
-# Safe to delete once no longer needed.
+# TEMPORARY debug command for tuning checkers/shopatsc.py's two-stage
+# render escalation (render=false first, render=true only if that looks
+# incomplete — the .js Shopify JSON endpoint's "available" field was
+# confirmed unreliable for this store and is no longer used at all) —
+# same admin restriction as /debugoneplus and /debugreliance above. NOT
+# wired into CHECKER_MAP or the regular check cycle — shopatsc's live
+# check_stock fetch (stock_checker.py) is completely untouched by this;
+# it calls checkers.shopatsc.check_via_html() directly. This command
+# instead calls checkers.shopatsc.debug_check(), a diagnostics-only
+# sibling that runs the exact same two-stage logic but returns rich
+# detail (render mode used, status codes, errors, visible-text length,
+# per-stage timing, raw signal) instead of collapsing to a bool. Safe to
+# delete once no longer needed.
 # ---------------------------------------------------------------------------
 _DEBUG_SONYOFFICIAL_ADMIN_ID = 5004721766  # same hardcoded restriction as
 # /debugoneplus and /debugreliance, on top of the router's own
@@ -1080,66 +1083,40 @@ async def cmd_debugsonyofficial(message: Message, command: CommandObject):
         await _debug_send(message, f"⚠️ debug_check crashed: {exc}")
         return
 
-    lines = ["— .js endpoint attempt —"]
-    lines.append(f"URL tried: {result['js_endpoint_url']}")
-    if result["js_success"]:
-        lines.append(f"✅ Succeeded (HTTP {result['js_status_code']})")
-        lines.append(f"Raw 'available' field: {result['js_raw_available']!r}")
-    else:
-        lines.append(f"❌ Failed (HTTP {result['js_status_code']})" if result["js_status_code"] is not None
-                      else "❌ Failed (no response)")
-        lines.append(f"Reason: {result['js_error']}")
-
-    # Raw structure dump — sent whenever the .js response parsed as JSON,
-    # regardless of whether a usable signal was found above, so the
-    # top-level "available" field (reported unreliable — True on at least
-    # one genuinely OOS product) can be directly compared against the
-    # variants[] array before any parsing-logic change is made.
-    if result["js_top_level_available_raw"] is not None or result["js_variants_raw"] is not None:
-        await _debug_send(message, "\n".join(lines))
-        lines = []
-        dump_lines = ["— Raw .js JSON structure (for diagnosing the field to use) —"]
-        dump_lines.append(f"Top-level 'available' field (currently used, reported unreliable): "
-                           f"{result['js_top_level_available_raw']!r}")
-        if result["js_variants_raw"] is not None:
-            first_variant = result["js_variants_raw"][0] if result["js_variants_raw"] else {}
-            variant0_available = first_variant.get("available", "<missing>") if isinstance(first_variant, dict) else "<no variants>"
-            dump_lines.append(f"Variant count: {result['js_variant_count']}")
-            dump_lines.append(f"variants[0]['available']: {variant0_available!r}")
-            for i, v in enumerate(result["js_variants_raw"]):
-                if isinstance(v, dict):
-                    dump_lines.append(
-                        f"  variants[{i}]: id={v.get('id')!r} title={v.get('title') or v.get('public_title')!r} "
-                        f"available={v.get('available')!r} price={v.get('price')!r}"
-                    )
-            dump_lines.append("")
-            dump_lines.append("Full variants[] JSON:")
-            dump_lines.append(json.dumps(result["js_variants_raw"], indent=2, default=str))
-        else:
-            dump_lines.append("No 'variants' array present in the response.")
-        full_dump = "\n".join(dump_lines)
-        _CHUNK_SIZE = 4000
-        for i in range(0, len(full_dump), _CHUNK_SIZE):
-            await _debug_send(message, full_dump[i:i + _CHUNK_SIZE])
+    lines = ["— render=false attempt —"]
+    lines.append(
+        f"Status: HTTP {result['render_false_status_code']}"
+        if result["render_false_status_code"] is not None else "Status: (no response)"
+    )
+    if result["render_false_error"]:
+        lines.append(f"❌ Error: {result['render_false_error']}")
+    lines.append(f"Visible text length: {result['render_false_visible_text_length']} chars")
+    lines.append(f"Looked incomplete: {'yes' if result['render_false_looked_incomplete'] else 'no'}")
+    lines.append(f"⏱ Time: {result['render_false_elapsed_seconds']:.2f}s")
 
     lines.append("")
-    if result["used_fallback"]:
-        lines.append("— Fell back to HTML scraping via Scrape.do (render=true) —")
-        if result["fallback_error"]:
-            lines.append(f"❌ Fallback fetch failed: {result['fallback_error']}")
-        else:
-            lines.append(f"Fallback fetch HTTP {result['fallback_status_code']}")
+    if result["used_render_true_fallback"]:
+        lines.append("— render=false looked incomplete/failed, retried with render=true —")
+        lines.append(
+            f"Status: HTTP {result['render_true_status_code']}"
+            if result["render_true_status_code"] is not None else "Status: (no response)"
+        )
+        if result["render_true_error"]:
+            lines.append(f"❌ Error: {result['render_true_error']}")
+        if result["render_true_visible_text_length"] is not None:
+            lines.append(f"Visible text length: {result['render_true_visible_text_length']} chars")
+        lines.append(f"⏱ Time: {result['render_true_elapsed_seconds']:.2f}s")
     else:
-        lines.append("— .js endpoint succeeded, HTML fallback NOT used —")
+        lines.append("— render=false was sufficient, render=true NOT used —")
 
     lines.append("")
     lines.append(f"Signal used: {result['signal']}")
     if result["in_stock"] is None:
-        lines.append("Verdict: ⚠️ INCONCLUSIVE (check failed before a signal was found)")
+        lines.append("Verdict: ⚠️ INCONCLUSIVE (both render=false and render=true fetches failed)")
     else:
         lines.append(f"Verdict: {'✅ IN STOCK' if result['in_stock'] else '❌ OUT OF STOCK'}")
 
     lines.append("")
-    lines.append(f"⏱ Total time: {result['elapsed_seconds']:.2f}s")
+    lines.append(f"⏱ Total time: {result['total_elapsed_seconds']:.2f}s")
 
     await _debug_send(message, "\n".join(lines))

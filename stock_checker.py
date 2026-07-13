@@ -165,14 +165,12 @@ _JS_SITES = {
     # _SUPER_PROXY_FALLBACK_SITES below for the render=true → super=true
     # escalation these four sites also get.
     "unicornstore", "vijaysales", "inventstore", "sangeethamobiles",
-    # ShopAtSC — only reached when the .js Shopify JSON endpoint (the
-    # primary signal, tried first — see shopatsc_checker.check_via_js_
-    # endpoint and the special-cased call near the top of check_stock())
-    # fails or isn't reachable. render=true is the fallback's safe
-    # default since this site's non-rendered page behavior hasn't been
-    # verified.
-    "shopatsc",
 }
+# ShopAtSC deliberately NOT here — it's special-cased near the top of
+# check_stock() with its own two-stage render escalation (render=false
+# first, render=true only if that looks incomplete), the opposite default
+# order from every other site in this set. See
+# checkers.shopatsc.check_via_html for the full reasoning.
 
 # OnePlus renders incompletely under a plain render=true (confirmed via the
 # /debugoneplus admin command — the page's JS/XHR activity hadn't settled
@@ -280,14 +278,18 @@ async def check_stock(
         return False, None
 
     if site == "shopatsc":
-        # Primary signal: Shopify's '<product>.js' JSON endpoint (cheap, no
-        # HTML parsing, no render=true credits). Only falls through to the
-        # standard render=true page fetch + checkers.shopatsc.check() below
-        # when this returns None (endpoint unreachable/unusable).
-        js_result = await shopatsc_checker.check_via_js_endpoint(url)
-        if js_result is not None:
-            logger.info(f"[shopatsc] {url} → {'IN STOCK' if js_result else 'OUT OF STOCK'} (via .js endpoint)")
-            return js_result, None
+        # Sole signal: HTML text detection via Scrape.do (render=false
+        # first, escalating to render=true only if that looks incomplete).
+        # The .js JSON endpoint's "available" field was confirmed
+        # unreliable for this store and is no longer used at all — see
+        # checkers.shopatsc.check_via_html.
+        try:
+            result = await shopatsc_checker.check_via_html(url)
+        except Exception as exc:
+            logger.error(f"[shopatsc] check_via_html failed: {exc}")
+            return False, None
+        logger.info(f"[shopatsc] {url} → {'IN STOCK' if result else 'OUT OF STOCK'}")
+        return result, None
 
     set_cookies = None
     if site in _QUICK_COMMERCE_SITES:
