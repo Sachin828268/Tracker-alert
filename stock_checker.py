@@ -260,11 +260,38 @@ _BLOCKED_PAGE_PHRASES = (
 _MIN_PLAUSIBLE_HTML_LENGTH = 2000
 
 
+def _visible_text_for_block_check(html: str) -> str:
+    """Strip <script>/<style>/<noscript> before extracting text —
+    mirrors every checker's own visible-text helper. Used by
+    _looks_blocked_or_incomplete's phrase check so it reflects what a
+    real viewer would actually SEE, not raw markup that can contain a
+    _BLOCKED_PAGE_PHRASES match with nothing to do with whether this
+    fetch actually got the real page: an always-present <noscript>
+    fallback message (e.g. "please enable javascript..."), a
+    third-party anti-bot vendor's own JS bundle literally containing
+    strings like "bot detection" or "captcha" in its source/comments, or
+    a hidden widget that's part of every normal page load. This was
+    confirmed as a real false positive for InventStore via
+    /debuginventstore: a fetch that visibly succeeded (46,710 chars of
+    real visible text, "Buy Now" present, no OOS text) was still being
+    flagged as blocked/incomplete by a phrase match somewhere in the raw
+    HTML outside the visible content."""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    return soup.get_text(" ", strip=True)
+
+
 def _looks_blocked_or_incomplete(html: str) -> bool:
+    # Length check stays against the RAW html — a genuinely empty/tiny
+    # response (e.g. a bare error page) is still caught here regardless
+    # of visible-text extraction, and this threshold wasn't implicated in
+    # the false positive above (InventStore's real page vastly exceeds
+    # it either way).
     if len(html) < _MIN_PLAUSIBLE_HTML_LENGTH:
         return True
-    html_lower = html.lower()
-    return any(phrase in html_lower for phrase in _BLOCKED_PAGE_PHRASES)
+    visible_text_lower = _visible_text_for_block_check(html).lower()
+    return any(phrase in visible_text_lower for phrase in _BLOCKED_PAGE_PHRASES)
 
 # No sites currently support pincode-specific stock via simple cookie injection.
 # Blinkit was here previously (`pincode=<value>`) but real captured Blinkit
