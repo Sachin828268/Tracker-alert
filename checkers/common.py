@@ -1,9 +1,12 @@
 """Shared utilities for all site checkers."""
 
+import asyncio
 import json
 import logging
 import os
 from urllib.parse import urlparse, urlencode
+
+import httpx
 
 from config import SUPPORTED_SITES
 
@@ -74,6 +77,96 @@ def build_scraper_url(
         # be available on every plan. Opt-in, unused by existing call sites.
         params["super"] = "true"
     return f"{SCRAPEDO_API_URL}?{urlencode(params)}"
+
+
+# ---------------------------------------------------------------------------
+# 502 retry helper — Scrape.do's premium/residential proxy pool
+# occasionally returns HTTP 502 (seen with an ErrorType: "ROTATION_FAILED"
+# header, but not guaranteed to carry it) when a proxy rotation fails.
+# Retrying shortly after usually gets a different rotation. Written as a
+# general reusable helper (any render_js/super_proxy/wait combination),
+# but currently only wired in for Unicorn Store's render=true+super=true
+# fallback tier — see stock_checker.py's _RETRY_502_SITES and
+# admin_handlers.py's /debugunicorn.
+# ---------------------------------------------------------------------------
+_DEFAULT_502_RETRY_ATTEMPTS = 3
+_DEFAULT_502_RETRY_WAIT_SECONDS = 4.0  # middle of the 3-5s range — gives
+# Scrape.do's proxy pool a chance to hand back a different rotation
+# without stalling the caller for too long.
+
+
+async def fetch_with_502_retry(
+    url: str,
+    render_js: bool = False,
+    super_proxy: bool = False,
+    set_cookies: str | None = None,
+    wait_until: str | None = None,
+    custom_wait_ms: int | None = None,
+    max_attempts: int = _DEFAULT_502_RETRY_ATTEMPTS,
+    retry_wait_seconds: float = _DEFAULT_502_RETRY_WAIT_SECONDS,
+    timeout: float = 60.0,
+) -> tuple[httpx.Response | None, list[dict]]:
+    """
+    Fetch url via Scrape.do, automatically retrying up to max_attempts
+    TOTAL attempts whenever the response is HTTP 502 — Scrape.do's own
+    proxy-rotation-failure symptom (an "ErrorType: ROTATION_FAILED"
+    response header is logged when present, but retrying is triggered by
+    the 502 status alone, since the header isn't guaranteed present).
+    Waits retry_wait_seconds between attempts.
+
+    Any OTHER outcome (a non-502 response, or an exception like a
+    timeout/connection error) is returned/logged immediately with NO
+    retry — this helper exists specifically for the "try again for a
+    fresh proxy rotation" symptom, not as a general-purpose retry-on-
+    anything wrapper. It never raises for a 502 (that's the condition
+    being retried around); an exception during the request IS captured
+    in the attempts log and stops the loop rather than being retried, so
+    a persistent network failure can't spin for max_attempts * wait_seconds
+    before surfacing.
+
+    Returns (response, attempts):
+      - response: the LAST httpx.Response obtained (a genuine non-502
+        response, or the final still-502 response if every attempt was a
+        502), or None if an exception was raised before any response was
+        received.
+      - attempts: a list of per-attempt diagnostic dicts, in order:
+        {"attempt": int, "status_code": int | None, "error": str | None}.
+
+    Never crashes or hangs indefinitely: exactly max_attempts network
+    calls at most, each bounded by `timeout`, with retry_wait_seconds of
+    sleep between 502s — the caller decides what to do with an
+    exhausted-retries (still-502) or errored response by inspecting it
+    and `attempts`, rather than this helper raising or looping forever.
+    """
+    scraper_url = build_scraper_url(
+        url, render_js=render_js, super_proxy=super_proxy, set_cookies=set_cookies,
+        wait_until=wait_until, custom_wait_ms=custom_wait_ms,
+    )
+    attempts: list[dict] = []
+    response: httpx.Response | None = None
+
+    for attempt_num in range(1, max_attempts + 1):
+        try:
+            async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=timeout) as client:
+                response = await client.get(scraper_url)
+        except Exception as exc:
+            attempts.append({"attempt": attempt_num, "status_code": None, "error": f"{type(exc).__name__}: {exc}"})
+            logger.warning(f"fetch_with_502_retry: attempt {attempt_num}/{max_attempts} failed (non-502): {exc}")
+            return response, attempts
+
+        if response.status_code != 502:
+            attempts.append({"attempt": attempt_num, "status_code": response.status_code, "error": None})
+            return response, attempts
+
+        error_type = response.headers.get("ErrorType") or response.headers.get("errortype")
+        error_desc = f"HTTP 502{f' (ErrorType: {error_type})' if error_type else ''}"
+        attempts.append({"attempt": attempt_num, "status_code": 502, "error": error_desc})
+        logger.warning(f"fetch_with_502_retry: attempt {attempt_num}/{max_attempts} got {error_desc}")
+
+        if attempt_num < max_attempts:
+            await asyncio.sleep(retry_wait_seconds)
+
+    return response, attempts
 
 
 # ---------------------------------------------------------------------------

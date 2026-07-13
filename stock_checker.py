@@ -11,7 +11,9 @@ import time
 import httpx
 from bs4 import BeautifulSoup
 
-from checkers import detect_site, build_scraper_url, HEADERS, CHECKER_MAP, PRICE_EXTRACTOR_MAP
+from checkers import (
+    detect_site, build_scraper_url, HEADERS, fetch_with_502_retry, CHECKER_MAP, PRICE_EXTRACTOR_MAP,
+)
 from checkers import apple as apple_checker
 from checkers import shopatsc as shopatsc_checker
 
@@ -206,6 +208,16 @@ _SUPER_PROXY_FALLBACK_SITES = frozenset({
     "unicornstore", "vijaysales", "inventstore", "sangeethamobiles",
 })
 
+# Sites whose render=true+super=true fallback fetch gets automatic retry
+# on HTTP 502 (Scrape.do's proxy-rotation-failure symptom, sometimes
+# carrying an ErrorType: "ROTATION_FAILED" response header) — confirmed
+# specifically for Unicorn Store's super=true tier via /debugunicorn.
+# Scoped to just this one site rather than all of
+# _SUPER_PROXY_FALLBACK_SITES, since 502s haven't been confirmed for the
+# other three. See checkers.common.fetch_with_502_retry for the retry
+# policy (3 attempts total, ~4s between retries).
+_RETRY_502_SITES = frozenset({"unicornstore"})
+
 # Heuristics for "the fetched page probably isn't the real one" — an
 # unusually short response, or a phrase commonly shown by bot-block/
 # challenge pages. Not confirmed against any of these four sites'
@@ -379,15 +391,48 @@ async def check_stock(
                 f"[{site}] render=true fetch looks blocked/incomplete "
                 f"(len={len(html)}) — retrying with super=true (premium proxy)"
             )
-            fallback_scraper_url = build_scraper_url(
-                url,
-                render_js=True,
-                set_cookies=set_cookies,
-                wait_until=_SITE_WAIT_UNTIL.get(site),
-                custom_wait_ms=_SITE_CUSTOM_WAIT_MS.get(site),
-                super_proxy=True,
-            )
-            html = await _fetch_html(fallback_scraper_url, site)
+
+            if site in _RETRY_502_SITES:
+                # Also retries the super=true fetch itself up to 3 total
+                # attempts on HTTP 502 (Scrape.do proxy-rotation-failure
+                # symptom), ~4s apart — see checkers.common.fetch_with_502_retry.
+                resp, attempts = await fetch_with_502_retry(
+                    url,
+                    render_js=True,
+                    set_cookies=set_cookies,
+                    wait_until=_SITE_WAIT_UNTIL.get(site),
+                    custom_wait_ms=_SITE_CUSTOM_WAIT_MS.get(site),
+                    super_proxy=True,
+                )
+                logger.info(f"[{site}] super=true fetch attempts: {attempts}")
+                if resp is not None:
+                    # Whatever came back — a genuine success, or a still-502
+                    # after every retry — becomes the HTML to check, exactly
+                    # like the non-retried path below. Never raises/hangs:
+                    # the retry helper already bounded attempts and timeouts.
+                    html = resp.text
+                else:
+                    # A non-502 exception (timeout/connection error) aborted
+                    # the retry loop early with no response at all — keep the
+                    # existing (render=true-only) HTML from above rather than
+                    # losing it, the same "proceed with whatever we have"
+                    # fallback philosophy as the non-retried branch.
+                    logger.warning(
+                        f"[{site}] super=true fetch failed outright after "
+                        f"{len(attempts)} attempt(s) — keeping the earlier "
+                        f"render=true-only HTML"
+                    )
+            else:
+                fallback_scraper_url = build_scraper_url(
+                    url,
+                    render_js=True,
+                    set_cookies=set_cookies,
+                    wait_until=_SITE_WAIT_UNTIL.get(site),
+                    custom_wait_ms=_SITE_CUSTOM_WAIT_MS.get(site),
+                    super_proxy=True,
+                )
+                html = await _fetch_html(fallback_scraper_url, site)
+
             if _looks_blocked_or_incomplete(html):
                 logger.warning(
                     f"[{site}] super=true retry STILL looks blocked/incomplete "

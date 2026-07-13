@@ -26,7 +26,7 @@ from aiogram.types import Message
 from bs4 import BeautifulSoup
 
 from access import compute_access, STATUS_TRIAL, STATUS_ACTIVE, STATUS_EXPIRED_GRACE, STATUS_LOCKED
-from checkers import build_scraper_url, HEADERS, shopatsc, unicornstore
+from checkers import build_scraper_url, HEADERS, fetch_with_502_retry, shopatsc, unicornstore
 from config import ADMIN_USER_ID, REMINDER_HOURS_BEFORE_EXPIRY, get_site_label
 from database import (
     IST,
@@ -1237,35 +1237,61 @@ async def cmd_debugunicorn(message: Message, command: CommandObject):
         f"Visible text length so far: {len(html)} raw chars\n⏱ Time: {elapsed_stage1:.2f}s",
     )
 
-    # Tier 2: render=true + super=true (same wait params) — only if tier 1
-    # still looks blocked/incomplete, exactly matching stock_checker.py's
-    # _SUPER_PROXY_FALLBACK_SITES escalation for this site.
+    # Tier 2: render=true + super=true (same wait params), with automatic
+    # retry on HTTP 502 (up to 3 total attempts, ~4s apart — Scrape.do's
+    # proxy-rotation-failure symptom, sometimes carrying an ErrorType:
+    # "ROTATION_FAILED" header) — only if tier 1 still looks blocked/
+    # incomplete, exactly matching stock_checker.py's escalation for this
+    # site (_SUPER_PROXY_FALLBACK_SITES + _RETRY_502_SITES).
     if _unicorn_looks_blocked_or_incomplete(html):
-        method_used = (
-            f"render=true + super=true, waitUntil={_UNICORN_WAIT_UNTIL!r}, "
-            f"customWait={_UNICORN_CUSTOM_WAIT_MS}ms (premium proxy, escalated — "
-            f"tier 1 looked blocked/incomplete)"
+        stage_start = time.monotonic()
+        resp2, attempts = await fetch_with_502_retry(
+            url, render_js=True, super_proxy=True,
+            wait_until=_UNICORN_WAIT_UNTIL, custom_wait_ms=_UNICORN_CUSTOM_WAIT_MS,
         )
-        try:
-            fallback_scraper_url = build_scraper_url(
-                url, render_js=True, super_proxy=True,
-                wait_until=_UNICORN_WAIT_UNTIL, custom_wait_ms=_UNICORN_CUSTOM_WAIT_MS,
-            )
-            stage_start = time.monotonic()
-            async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=60.0) as client:
-                resp2 = await client.get(fallback_scraper_url)
+        elapsed_stage2 = time.monotonic() - stage_start
+
+        attempt_lines = []
+        for a in attempts:
+            outcome = f"HTTP {a['status_code']}" if a["error"] is None else (a["error"] or "unknown error")
+            attempt_lines.append(f"  Attempt {a['attempt']}/{len(attempts)}: {outcome}")
+
+        if resp2 is not None:
             status_code = resp2.status_code
             html = resp2.text
-            elapsed_stage2 = time.monotonic() - stage_start
+            method_used = (
+                f"render=true + super=true, waitUntil={_UNICORN_WAIT_UNTIL!r}, "
+                f"customWait={_UNICORN_CUSTOM_WAIT_MS}ms (premium proxy, escalated — "
+                f"tier 1 looked blocked/incomplete; {len(attempts)} attempt(s) made)"
+            )
             await _debug_send(
                 message,
-                f"— Tier 2: render=true + super=true (tier 1 looked blocked/incomplete) —\n"
-                f"Status: HTTP {status_code}\nVisible text length so far: {len(html)} raw chars\n"
+                f"— Tier 2: render=true + super=true, retrying on HTTP 502 "
+                f"(tier 1 looked blocked/incomplete) —\n"
+                + "\n".join(attempt_lines)
+                + f"\nFinal status: HTTP {status_code}\n"
+                f"Visible text length so far: {len(html)} raw chars\n"
                 f"⏱ Time: {elapsed_stage2:.2f}s",
             )
-        except Exception as exc:
-            await _debug_send(message, f"⚠️ super=true fallback fetch failed: {exc}")
-            return
+        else:
+            # Every attempt failed outright (non-502 exception, e.g. a
+            # timeout/connection error) — no response at all. Per the
+            # "don't crash or hang" requirement, keep the earlier
+            # (tier 1) HTML and still send a reply rather than aborting
+            # the command silently.
+            method_used = (
+                f"render=true only, waitUntil={_UNICORN_WAIT_UNTIL!r}, "
+                f"customWait={_UNICORN_CUSTOM_WAIT_MS}ms (super=true retry attempted "
+                f"{len(attempts)} time(s) but failed outright each time — kept tier 1's HTML)"
+            )
+            await _debug_send(
+                message,
+                f"— Tier 2: render=true + super=true, retrying on HTTP 502 "
+                f"(tier 1 looked blocked/incomplete) —\n"
+                + "\n".join(attempt_lines)
+                + f"\n⚠️ All {len(attempts)} attempt(s) failed outright — no response received. "
+                f"Falling back to tier 1's HTML rather than crashing.\n⏱ Time: {elapsed_stage2:.2f}s",
+            )
     else:
         await _debug_send(message, "— Tier 2: render=true + super=true — NOT used (tier 1 was sufficient) —")
 
