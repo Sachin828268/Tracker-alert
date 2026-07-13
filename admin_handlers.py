@@ -22,12 +22,14 @@ from urllib.parse import urlparse
 import httpx
 from aiogram import Router, F
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.fsm.context import FSMContext
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from bs4 import BeautifulSoup
 
 from access import compute_access, STATUS_TRIAL, STATUS_ACTIVE, STATUS_EXPIRED_GRACE, STATUS_LOCKED
 from checkers import (
     build_scraper_url, HEADERS, fetch_with_502_retry, shopatsc, unicornstore, inventstore, reliancedigital, apple,
+    CHECKER_MAP,
 )
 from config import ADMIN_USER_ID, REMINDER_HOURS_BEFORE_EXPIRY, get_site_label
 from database import (
@@ -54,13 +56,20 @@ from database import (
     disable_whatsapp_channel,
     get_whatsapp_channel,
     set_whatsapp_group_name,
+    list_users_with_products_summary,
+    bulk_stop_tracking,
+    bulk_cancel_plan,
+    list_tracked_links_by_store,
 )
 import whatsapp_client
+from states import AdminBulkStates
 from notifications import (
     send_approval_notice,
     send_rejection_notice,
     send_block_notice,
     send_unblock_notice,
+    send_plan_cancelled_notice,
+    send_items_removed_notice,
 )
 
 logger = logging.getLogger(__name__)
@@ -560,6 +569,234 @@ async def cmd_whatsappdisable(message: Message, command: CommandObject):
         await message.answer(f"🚫 WhatsApp channel forwarding for user {user_id} disabled.")
     else:
         await message.answer(f"⚠️ No WhatsApp channel registration found for user {user_id}.")
+
+
+# ---------------------------------------------------------------------------
+# /managetracking — bulk "Stop Tracking" + "Stop Plan" panel.
+#
+# Lists every user who currently has at least one tracked product as a
+# checkbox keyboard (mirroring handlers.py's /select checkbox pattern:
+# sel_toggle: callbacks + a ✅/⬜ mark per row, driven by an FSM state so the
+# selection survives across button taps). Two bulk actions:
+#   • Stop Tracking (selected) — deletes ALL tracked products for each
+#     selected user (database.bulk_stop_tracking), notifying each affected
+#     user with the exact items removed (reusing the same
+#     items_removed_text the dashboard's own item-removal flow sends).
+#   • Stop Plan (selected) — cancels each selected user's current access
+#     period (database.bulk_cancel_plan / cancel_user_plan), which ties into
+#     the existing tiered plan system by simply expiring access_until now —
+#     the user then flows through the exact same grace-period/locked states
+#     a normal plan expiry would, rather than a separate punitive "blocked"
+#     flag (see /block for that).
+# Both actions show a confirmation summary (affected users + product counts
+# or plan names) before anything is executed — mirroring /select's
+# sel_delete_selected -> sel_confirm_delete two-step flow.
+# ---------------------------------------------------------------------------
+
+def _managetracking_keyboard(rows: list[dict], selected: set[int]) -> InlineKeyboardMarkup:
+    buttons = []
+    for r in rows:
+        mark = "✅" if r["user_id"] in selected else "⬜"
+        plan = get_plan_by_id(r["plan_id"]) if r.get("plan_id") else None
+        plan_label = plan["name"] if plan else "no plan"
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{mark} {_display_name(r)} — {r['product_count']} item(s) [{plan_label}]",
+                callback_data=f"mt_toggle:{r['user_id']}",
+            )
+        ])
+    buttons.append([
+        InlineKeyboardButton(text="🗑 Stop Tracking (Selected)", callback_data="mt_stoptracking"),
+    ])
+    buttons.append([
+        InlineKeyboardButton(text="🚫 Stop Plan (Selected)", callback_data="mt_stopplan"),
+    ])
+    buttons.append([
+        InlineKeyboardButton(text="❌ Cancel", callback_data="mt_cancel"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.message(Command("managetracking"))
+async def cmd_managetracking(message: Message, state: FSMContext):
+    rows = list_users_with_products_summary()
+    if not rows:
+        await message.answer("📭 No users currently have any tracked products.")
+        return
+    await state.set_state(AdminBulkStates.managing)
+    await state.update_data(selected_ids=[])
+    await message.answer(
+        f"☑️ <b>Manage tracking ({len(rows)} user(s) with tracked items)</b>\n\n"
+        "Tap to toggle ✅/⬜, then choose a bulk action:",
+        parse_mode="HTML",
+        reply_markup=_managetracking_keyboard(rows, set()),
+    )
+
+
+@router.callback_query(F.data.startswith("mt_toggle:"), AdminBulkStates.managing)
+async def callback_mt_toggle(call: CallbackQuery, state: FSMContext):
+    user_id = int(call.data.split(":", 1)[1])
+    data = await state.get_data()
+    selected = set(data.get("selected_ids", []))
+    if user_id in selected:
+        selected.discard(user_id)
+    else:
+        selected.add(user_id)
+    await state.update_data(selected_ids=list(selected))
+    rows = list_users_with_products_summary()
+    await call.message.edit_reply_markup(reply_markup=_managetracking_keyboard(rows, selected))
+    await call.answer()
+
+
+@router.callback_query(F.data == "mt_stoptracking", AdminBulkStates.managing)
+async def callback_mt_stoptracking(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected = set(data.get("selected_ids", []))
+    if not selected:
+        await call.answer("No users selected! Tap ⬜ to select users first.", show_alert=True)
+        return
+    rows = {r["user_id"]: r for r in list_users_with_products_summary()}
+    total_items = sum(rows[uid]["product_count"] for uid in selected if uid in rows)
+    await call.message.edit_text(
+        f"⚠️ <b>Stop tracking for {len(selected)} selected user(s)?</b>\n\n"
+        f"This will permanently delete {total_items} tracked item(s) total across "
+        f"them and notify each affected user. This cannot be undone.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Yes, stop tracking", callback_data="mt_confirm_stoptracking"),
+                InlineKeyboardButton(text="↩️ Go back", callback_data="mt_back"),
+            ]
+        ]),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "mt_stopplan", AdminBulkStates.managing)
+async def callback_mt_stopplan(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected = set(data.get("selected_ids", []))
+    if not selected:
+        await call.answer("No users selected! Tap ⬜ to select users first.", show_alert=True)
+        return
+    rows = {r["user_id"]: r for r in list_users_with_products_summary()}
+    plan_lines = []
+    for uid in selected:
+        r = rows.get(uid)
+        if r is None:
+            continue
+        plan = get_plan_by_id(r["plan_id"]) if r.get("plan_id") else None
+        plan_lines.append(f"  • {_display_name(r)} — {plan['name'] if plan else 'no plan'}")
+    await call.message.edit_text(
+        f"⚠️ <b>Stop the plan for {len(selected)} selected user(s)?</b>\n\n"
+        + "\n".join(plan_lines) +
+        "\n\nTheir access will expire immediately (same grace-period flow as a "
+        "normal plan expiry) and each will be notified. Their tracked items are "
+        "NOT deleted by this action.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Yes, stop plan", callback_data="mt_confirm_stopplan"),
+                InlineKeyboardButton(text="↩️ Go back", callback_data="mt_back"),
+            ]
+        ]),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "mt_confirm_stoptracking", AdminBulkStates.managing)
+async def callback_mt_confirm_stoptracking(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected = list(set(data.get("selected_ids", [])))
+    removed = bulk_stop_tracking(selected)
+    for uid, names in removed.items():
+        await send_items_removed_notice(call.bot, uid, names)
+    total_items = sum(len(v) for v in removed.values())
+    await call.message.edit_text(
+        f"✅ Stopped tracking for <b>{len(removed)}</b> user(s) "
+        f"({total_items} item(s) deleted total) and notified them.",
+        parse_mode="HTML",
+    )
+    await state.clear()
+    await call.answer()
+
+
+@router.callback_query(F.data == "mt_confirm_stopplan", AdminBulkStates.managing)
+async def callback_mt_confirm_stopplan(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected = list(set(data.get("selected_ids", [])))
+    cancelled = bulk_cancel_plan(selected, admin_id=call.from_user.id)
+    for uid in cancelled:
+        await send_plan_cancelled_notice(call.bot, uid)
+    await call.message.edit_text(
+        f"✅ Stopped the plan for <b>{len(cancelled)}</b> user(s) and notified them.",
+        parse_mode="HTML",
+    )
+    await state.clear()
+    await call.answer()
+
+
+@router.callback_query(F.data == "mt_back", AdminBulkStates.managing)
+async def callback_mt_back(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected = set(data.get("selected_ids", []))
+    rows = list_users_with_products_summary()
+    if not rows:
+        await call.message.edit_text("📭 No users with tracked items left to manage.")
+        await state.clear()
+        await call.answer()
+        return
+    await call.message.edit_text(
+        f"☑️ <b>Manage tracking ({len(rows)} user(s) with tracked items)</b>\n\n"
+        "Tap to toggle ✅/⬜, then choose a bulk action:",
+        parse_mode="HTML",
+        reply_markup=_managetracking_keyboard(rows, selected),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "mt_cancel", AdminBulkStates.managing)
+async def callback_mt_cancel(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.message.edit_text("❌ Cancelled.")
+    await call.answer()
+
+
+# ---------------------------------------------------------------------------
+# /linksbystore — read-only view of every currently-tracked product link,
+# grouped by marketplace (site), with each link's display name and how many
+# distinct users are tracking it. Iterates checkers.CHECKER_MAP's key order
+# so every currently-supported store is represented in the same canonical
+# order used everywhere else in the codebase; a site with zero tracked links
+# is simply skipped (nothing to show).
+# ---------------------------------------------------------------------------
+
+@router.message(Command("linksbystore"))
+async def cmd_linksbystore(message: Message):
+    grouped = list_tracked_links_by_store()
+    if not grouped:
+        await message.answer("📭 No tracked links yet.")
+        return
+
+    lines = ["🔗 <b>Tracked links by store</b>\n"]
+    # CHECKER_MAP's order first (canonical), then any leftover site not in
+    # CHECKER_MAP (e.g. a retired store like Croma with lingering rows) so
+    # nothing tracked is ever silently hidden.
+    ordered_sites = list(CHECKER_MAP.keys()) + [
+        s for s in grouped.keys() if s not in CHECKER_MAP
+    ]
+    for site in ordered_sites:
+        links = grouped.get(site)
+        if not links:
+            continue
+        lines.append(f"\n🏪 <b>{get_site_label(site)}</b> ({len(links)} link(s))")
+        for link in links:
+            lines.append(f"  • {link['name']} — {link['tracker_count']} user(s)\n    {link['url']}")
+
+    text = "\n".join(lines)
+    # Telegram messages cap at 4096 chars — chunk if the list is large.
+    for i in range(0, len(text), 3800):
+        await message.answer(text[i:i + 3800], parse_mode="HTML", disable_web_page_preview=True)
 
 
 # ---------------------------------------------------------------------------

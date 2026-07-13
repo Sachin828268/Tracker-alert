@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% set active = 'links_by_store' %}
+{% block title %}Links by store{% endblock %}
+{% block body %}
+<h1>Tracked links by store</h1>
+{% if sections %}
+  {% for s in sections %}
+  <h2 style="font-size:16px;margin:22px 0 8px;">🏪 {{ s.site.capitalize() }} ({{ s.links|length }} link(s))</h2>
+  <div class="tablewrap" style="margin-bottom:8px;">
+    <table>
+      <thead><tr><th>Product</th><th>Tracked by</th><th>Link</th></tr></thead>
+      <tbody>
+        {% for link in s.links %}
+        <tr>
+          <td>{{ link.name }}</td>
+          <td>{{ link.tracker_count }} user(s)</td>
+          <td><a class="rowlink" href="{{ link.url }}" target="_blank" rel="noopener">open ↗</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endfor %}
+{% else %}
+<p class="empty">No tracked links yet.</p>
+{% endif %}
+<p class="note">Each row is one distinct URL, deduplicated across users. "Tracked by" is the number of distinct users currently tracking that exact link.</p>
+{% endblock %}

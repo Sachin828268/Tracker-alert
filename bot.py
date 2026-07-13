@@ -303,6 +303,8 @@ async def register_commands(bot: Bot) -> None:
         BotCommand(command="whatsapppending", description="[admin] WhatsApp channels awaiting approval"),
         BotCommand(command="whatsappapprove", description="[admin] Approve a user's WhatsApp channel"),
         BotCommand(command="whatsappdisable", description="[admin] Disable a user's WhatsApp forwarding"),
+        BotCommand(command="managetracking", description="[admin] Bulk stop tracking / stop plan"),
+        BotCommand(command="linksbystore",   description="[admin] Tracked links grouped by store"),
     ]
     # Scoped ONLY to the admin's own chat — regular users never see these in
     # their Telegram "/" menu, on top of being functionally unreachable to

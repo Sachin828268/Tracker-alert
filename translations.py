@@ -568,6 +568,29 @@ _T: dict[str, dict[str, str]] = {
         "tamil": "✅ <b>உங்கள் access மீண்டும் இயக்கப்பட்டது.</b> மீண்டும் வரவேற்கிறோம்!",
         "gujarati": "✅ <b>તમારો access પાછો ચાલુ કરવામાં આવ્યો છે.</b> પાછા સ્વાગત છે!",
     },
+    "plan_cancelled_notice": {
+        "en": ("🚫 <b>Your plan has been cancelled by the admin.</b>\n\n"
+               "Your tracked items are safe, but alerts have stopped. "
+               "Contact the admin to renew your plan."),
+        "hi": ("🚫 <b>आपका plan admin द्वारा cancel कर दिया गया है।</b>\n\n"
+               "आपके tracked items safe हैं, पर alerts बंद हो गए हैं। "
+               "Plan renew करने के लिए admin से संपर्क करें।"),
+        "hinglish": ("🚫 <b>Aapka plan admin ne cancel kar diya hai.</b>\n\n"
+                     "Aapke tracked items safe hain, par alerts band ho gaye hain. "
+                     "Plan renew karne ke liye admin se contact karo."),
+        "punjabi": ("🚫 <b>Tuhada plan admin ne cancel kar dita hai ji.</b>\n\n"
+                    "Tuhade tracked items safe ne, par alerts band ho gaye ne. "
+                    "Plan renew karan layi admin nu sampark karo."),
+        "haryanvi": ("🚫 <b>थारा plan admin नै cancel कर दिया सै।</b>\n\n"
+                     "थारे tracked items सुरक्षित सै, पर alerts बंद होगे सै। "
+                     "Plan renew करण खात्तर admin तै बात कर।"),
+        "tamil": ("🚫 <b>உங்கள் plan-ஐ admin cancel செய்துவிட்டார்.</b>\n\n"
+                  "உங்கள் tracked items பாதுகாப்பாக உள்ளன, ஆனால் alerts நிறுத்தப்பட்டுள்ளன. "
+                  "Plan-ஐ renew செய்ய admin-ஐ தொடர்பு கொள்ளுங்கள்."),
+        "gujarati": ("🚫 <b>તમારો plan admin દ્વારા cancel કરવામાં આવ્યો છે.</b>\n\n"
+                     "તમારી tracked items સુરક્ષિત છે, પણ alerts બંધ થઈ ગયા છે. "
+                     "Plan renew કરવા માટે admin નો સંપર્ક કરો."),
+    },
     "expiry_reminder": {
         "en": ("⏰ <b>Your {kind} expires in about {hours} hour(s).</b>\n\n"
                "💳 To keep your alerts running, send an Amazon Gift Card to the admin "

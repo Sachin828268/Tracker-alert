@@ -17,3 +17,7 @@ class SearchStates(StatesGroup):
 
 class SelectStates(StatesGroup):
     selecting = State()
+
+
+class AdminBulkStates(StatesGroup):
+    managing = State()

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% set active = 'manage_tracking' %}
+{% block title %}Confirm — {{ title }}{% endblock %}
+{% block body %}
+<p class="note" style="margin-top:0;"><a class="rowlink" href="{{ url_for('manage_tracking') }}">← Manage tracking</a></p>
+<h1>Confirm: {{ title }}</h1>
+<div class="card" style="margin-bottom:14px;">
+  <p style="margin-top:0;">{{ warning }}</p>
+</div>
+<div class="tablewrap" style="margin-bottom:14px;">
+  <table>
+    <thead><tr><th>User ID</th><th>User</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.user_id }}</td>
+        <td>{{ r.name }}</td>
+        <td>{{ r.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<form method="post" action="{{ action_url }}">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  {% for uid in uids %}
+  <input type="hidden" name="uids" value="{{ uid }}">
+  {% endfor %}
+  <button class="btn bad" type="submit">✅ Yes, proceed ({{ rows|length }} user(s))</button>
+  <a class="btn" href="{{ url_for('manage_tracking') }}">↩️ Go back</a>
+</form>
+{% endblock %}

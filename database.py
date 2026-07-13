@@ -1058,6 +1058,126 @@ def purge_user_data(user_id: int) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Admin bulk actions: "Stop Tracking" + "Stop Plan" panel (Telegram
+# /managetracking and the dashboard's matching page) and the "tracked links
+# grouped by store" view (/linksbystore and its dashboard equivalent).
+# ---------------------------------------------------------------------------
+
+def list_users_with_products_summary() -> list[dict]:
+    """
+    Every user who currently has at least 1 tracked product, joined with
+    their access-row fields (plan_id, is_trial, access_until, blocked) and a
+    product_count. Built from `products` as the base table (LEFT JOIN users)
+    so a user is never missed even if their `users` row somehow doesn't
+    exist yet — defensive rather than assumed, since normally every
+    product-tracking user already has one (see init_db's migration/self-heal
+    comments). Ordered by product_count DESC so the busiest trackers are
+    seen first.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT p.user_id,
+                   u.username, u.first_name, u.plan_id, u.is_trial,
+                   u.access_until, u.blocked,
+                   COUNT(p.id) AS product_count
+            FROM products p
+            LEFT JOIN users u ON u.user_id = p.user_id
+            GROUP BY p.user_id
+            ORDER BY product_count DESC
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def bulk_stop_tracking(user_ids: list[int]) -> dict[int, list[str]]:
+    """
+    Admin bulk action: delete ALL tracked products for each of the given
+    user_ids. Returns {user_id: [deleted product names]}, only for user_ids
+    that actually had something deleted, so callers can both report a
+    summary AND notify each affected user with the exact items removed
+    (mirroring dashboard.py's existing single-user _bulk_remove/
+    items_removed_text notification pattern).
+    """
+    if not user_ids:
+        return {}
+    removed: dict[int, list[str]] = {}
+    with get_connection() as conn:
+        for uid in user_ids:
+            rows = conn.execute("SELECT name FROM products WHERE user_id = ?", (uid,)).fetchall()
+            if not rows:
+                continue
+            conn.execute("DELETE FROM products WHERE user_id = ?", (uid,))
+            removed[uid] = [r["name"] for r in rows]
+        conn.commit()
+    return removed
+
+
+def cancel_user_plan(user_id: int, admin_id: int) -> bool:
+    """
+    Admin 'Stop Plan' action: immediately ends this user's current access
+    period by setting access_until to now. Reuses the SAME expiry mechanism
+    a plan naturally reaching its end date already goes through (grace
+    period, then locked — see access.compute_access), rather than
+    introducing a separate punitive semantic like set_blocked's admin lock.
+    plan_id and is_trial are left untouched, so a later grant_access/
+    /approve for this user resumes cleanly against the same plan. Returns
+    False if the user has no row at all. Recorded in the approvals audit
+    trail as action='cancel'.
+    """
+    row = get_user(user_id)
+    if row is None:
+        return False
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET access_until = ? WHERE user_id = ?",
+            (now_ist_str(), user_id),
+        )
+        conn.commit()
+    _record_approval(user_id, row.get("plan_id"), None, None, "cancel", "Admin bulk plan cancellation", admin_id)
+    return True
+
+
+def bulk_cancel_plan(user_ids: list[int], admin_id: int) -> list[int]:
+    """Cancel access for each of the given user_ids (see cancel_user_plan).
+    Returns the subset that were actually found and cancelled."""
+    return [uid for uid in user_ids if cancel_user_plan(uid, admin_id)]
+
+
+def list_tracked_links_by_store() -> dict[str, list[dict]]:
+    """
+    Every currently-tracked product URL, grouped by site and deduplicated
+    across users: {site: [{site, url, tracker_count, name}, ...]},
+    most-tracked link first within each site. `name` is the display name
+    from whichever tracking user added it earliest for that (site, url) pair
+    — different users can type different names for the same URL, so the
+    earliest-added one is used as a stable, deterministic choice.
+    tracker_count counts DISTINCT users tracking that exact URL — the
+    admin's "how many users track this link" view (Telegram /linksbystore
+    and the dashboard's matching page).
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT p.site, p.url,
+                   COUNT(DISTINCT p.user_id) AS tracker_count,
+                   (
+                       SELECT name FROM products
+                       WHERE products.site = p.site AND products.url = p.url
+                       ORDER BY created_at ASC LIMIT 1
+                   ) AS name
+            FROM products p
+            GROUP BY p.site, p.url
+            ORDER BY p.site ASC, tracker_count DESC, name ASC
+            """
+        ).fetchall()
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(row["site"], []).append(dict(row))
+    return grouped
+
+
+# ---------------------------------------------------------------------------
 # Approvals (audit trail for approve/reject/extend/block/unblock)
 # ---------------------------------------------------------------------------
 

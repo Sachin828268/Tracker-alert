@@ -148,6 +148,10 @@ def unblock_notice_text(lang: str = "en") -> str:
     return t("unblock_notice", lang)
 
 
+def plan_cancelled_text(lang: str = "en") -> str:
+    return t("plan_cancelled_notice", lang)
+
+
 async def send_approval_notice(bot: Bot, user_id: int, plan_name: str, days: int, access_until: str):
     await _safe_send(bot, user_id, approval_notice_text(plan_name, days, access_until, get_user_lang(user_id)))
 
@@ -168,6 +172,14 @@ async def send_block_notice(bot: Bot, user_id: int):
 
 async def send_unblock_notice(bot: Bot, user_id: int):
     await _safe_send(bot, user_id, unblock_notice_text(get_user_lang(user_id)))
+
+
+async def send_plan_cancelled_notice(bot: Bot, user_id: int):
+    await _safe_send(bot, user_id, plan_cancelled_text(get_user_lang(user_id)))
+
+
+async def send_items_removed_notice(bot: Bot, user_id: int, product_names: list[str]):
+    await _safe_send(bot, user_id, items_removed_text(product_names, get_user_lang(user_id)))
 
 
 async def send_data_purged_notice(bot: Bot, user_id: int, count: int):

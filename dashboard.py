@@ -38,6 +38,7 @@ from flask import (
     request, session, url_for,
 )
 
+from checkers import CHECKER_MAP
 from config import ADMIN_USER_ID, BOT_TOKEN, SUPPORTED_SITES
 from access import (
     compute_access,
@@ -76,6 +77,10 @@ from database import (
     approve_whatsapp_channel,
     disable_whatsapp_channel,
     set_whatsapp_group_name,
+    list_users_with_products_summary,
+    bulk_stop_tracking,
+    bulk_cancel_plan,
+    list_tracked_links_by_store,
 )
 import whatsapp_client
 from notifications import (
@@ -84,6 +89,7 @@ from notifications import (
     block_notice_text,
     unblock_notice_text,
     items_removed_text,
+    plan_cancelled_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -830,6 +836,141 @@ def create_app() -> Flask:
         else:
             flash(f"No WhatsApp channel registration found for user {uid}.", "bad")
         return redirect(url_for("whatsapp_channels"))
+
+    # ── Manage tracking: bulk "Stop Tracking" + "Stop Plan" ──────────────────
+    # Lists every user with at least one tracked product. Both bulk actions go
+    # through a dedicated confirmation page (showing exactly who/what will be
+    # affected) before anything executes — a stronger guard than the plain JS
+    # confirm() used elsewhere in this dashboard, appropriate for a
+    # destructive/plan-altering bulk action.
+    @app.route("/manage-tracking")
+    @login_required
+    def manage_tracking():
+        rows = []
+        for r in list_users_with_products_summary():
+            plan = get_plan_by_id(r["plan_id"]) if r.get("plan_id") else None
+            rows.append({
+                "user_id": r["user_id"],
+                "name": _display_name(r),
+                "plan": plan["name"] if plan else "—",
+                "product_count": r["product_count"],
+                "blocked": bool(r.get("blocked")),
+            })
+        return render_template("manage_tracking.html", rows=rows)
+
+    @app.route("/manage-tracking/preview-stop-tracking", methods=["POST"])
+    @login_required
+    def manage_tracking_preview_stop_tracking():
+        uids = _valid_uids(request.form.getlist("uids"))
+        if not uids:
+            flash("No users selected.", "bad")
+            return redirect(url_for("manage_tracking"))
+        summary_rows = []
+        total_items = 0
+        for uid in uids:
+            u = get_user(uid)
+            count = len(list_products(uid))
+            if count == 0:
+                continue
+            total_items += count
+            summary_rows.append({
+                "user_id": uid, "name": _display_name(u) if u else str(uid),
+                "detail": f"{count} item(s)",
+            })
+        if not summary_rows:
+            flash("None of the selected users have any tracked items.", "bad")
+            return redirect(url_for("manage_tracking"))
+        return render_template(
+            "manage_tracking_confirm.html",
+            title="Stop tracking",
+            warning=(
+                f"This will permanently delete {total_items} tracked item(s) across "
+                f"{len(summary_rows)} user(s) and notify each one. This cannot be undone."
+            ),
+            rows=summary_rows,
+            uids=[r["user_id"] for r in summary_rows],
+            action_url=url_for("manage_tracking_execute_stop_tracking"),
+        )
+
+    @app.route("/manage-tracking/execute-stop-tracking", methods=["POST"])
+    @login_required
+    def manage_tracking_execute_stop_tracking():
+        uids = _valid_uids(request.form.getlist("uids"))
+        if not uids:
+            flash("No users selected.", "bad")
+            return redirect(url_for("manage_tracking"))
+        removed = bulk_stop_tracking(uids)
+        notified = sum(
+            1 for uid, names in removed.items()
+            if _tg_send(uid, items_removed_text(names, get_user_lang(uid)))
+        )
+        total_items = sum(len(v) for v in removed.values())
+        flash(
+            f"Stopped tracking for {len(removed)} user(s) "
+            f"({total_items} item(s) deleted total), notified {notified}.", "ok",
+        )
+        return redirect(url_for("manage_tracking"))
+
+    @app.route("/manage-tracking/preview-stop-plan", methods=["POST"])
+    @login_required
+    def manage_tracking_preview_stop_plan():
+        uids = _valid_uids(request.form.getlist("uids"))
+        if not uids:
+            flash("No users selected.", "bad")
+            return redirect(url_for("manage_tracking"))
+        summary_rows = []
+        for uid in uids:
+            u = get_user(uid)
+            if u is None:
+                continue
+            plan = get_plan_by_id(u["plan_id"]) if u.get("plan_id") else None
+            summary_rows.append({
+                "user_id": uid, "name": _display_name(u),
+                "detail": f"plan: {plan['name'] if plan else 'no plan'}",
+            })
+        if not summary_rows:
+            flash("None of the selected users could be found.", "bad")
+            return redirect(url_for("manage_tracking"))
+        return render_template(
+            "manage_tracking_confirm.html",
+            title="Stop plan",
+            warning=(
+                f"This will immediately expire access for {len(summary_rows)} user(s) "
+                f"(same grace-period flow as a normal plan expiry) and notify each "
+                f"one. Their tracked items are NOT deleted by this action."
+            ),
+            rows=summary_rows,
+            uids=[r["user_id"] for r in summary_rows],
+            action_url=url_for("manage_tracking_execute_stop_plan"),
+        )
+
+    @app.route("/manage-tracking/execute-stop-plan", methods=["POST"])
+    @login_required
+    def manage_tracking_execute_stop_plan():
+        uids = _valid_uids(request.form.getlist("uids"))
+        if not uids:
+            flash("No users selected.", "bad")
+            return redirect(url_for("manage_tracking"))
+        cancelled = bulk_cancel_plan(uids, ADMIN_USER_ID)
+        notified = sum(1 for uid in cancelled if _tg_send(uid, plan_cancelled_text(get_user_lang(uid))))
+        flash(f"Stopped the plan for {len(cancelled)} user(s), notified {notified}.", "ok")
+        return redirect(url_for("manage_tracking"))
+
+    # ── Tracked links grouped by store ────────────────────────────────────────
+    @app.route("/links-by-store")
+    @login_required
+    def links_by_store():
+        grouped = list_tracked_links_by_store()
+        # CHECKER_MAP's order first (canonical, matches /linksbystore in the
+        # Telegram admin panel), then any leftover site not in CHECKER_MAP
+        # (e.g. a retired store like Croma with lingering rows) so nothing
+        # tracked is ever silently hidden.
+        ordered_sites = list(CHECKER_MAP.keys()) + [s for s in grouped.keys() if s not in CHECKER_MAP]
+        sections = [
+            {"site": site, "links": grouped[site]}
+            for site in ordered_sites if grouped.get(site)
+        ]
+        return render_template("links_by_store.html", sections=sections)
 
     return app
 
